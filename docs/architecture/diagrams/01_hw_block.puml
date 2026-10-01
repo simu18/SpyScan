@@ -1,0 +1,62 @@
+@startuml 01_hw_block
+title SpyScan V1 — Hardware structural diagram
+skinparam componentStyle rectangle
+skinparam defaultFontName Helvetica
+skinparam shadowing false
+left to right direction
+
+package "Power subsystem" {
+  [Li-Po 1S 2000 mAh\n3.0–4.2 V\n(with protection)] as BAT
+  [Charge + boost module\nIP5306-type, USB-C\nout: 5 V / ≤2.1 A] as PWR
+  [Slide switch] as SW
+  [Divider 100k/100k] as DIV
+}
+
+package "ESP32-S3 camera board (N8R8 / N16R8)" {
+  [5V→3.3V LDO\n(on board)] as LDO
+  [ESP32-S3\n2× Xtensa LX7 @240 MHz\n512 KB SRAM\nWi-Fi 2.4 GHz + BLE 5] as MCU
+  [Octal PSRAM 8 MB\n(frame buffers)] as PSRAM
+  [Flash 8–16 MB] as FLASH
+  [PCB antenna 2.4 GHz] as ANT
+  [USB-C\n(USB-Serial / native USB)] as USB
+}
+
+package "Optical head" {
+  [OV2640 camera\n(+ IR-cut lens)] as CAM
+  [On-axis ring\n6× red LED 3 mm, ≈625 nm\n20 mA each] as LEDA
+  [Off-axis pair\n2× red LED, ≥30 mm offset] as LEDB
+  [AO3400A ×2\nlow-side switches] as FET
+}
+
+package "HMI" {
+  [ILI9341 2.4" TFT\n240×320, SPI] as LCD
+  [3 buttons\nUP / SELECT / BACK] as BTN
+  [Buzzer (optional)] as BZ
+}
+
+BAT --> PWR : VBAT
+PWR --> SW : 5 V
+SW --> LDO : 5 V
+SW --> LEDA : 5 V (LED supply)
+SW --> LEDB : 5 V
+LDO --> MCU : 3.3 V
+LDO --> LCD : 3.3 V
+LDO --> CAM : 3.3 V (on-board 2.8/1.5 V LDOs)
+BAT --> DIV
+DIV --> MCU : ADC1_CH0 (GPIO1)
+
+MCU <--> PSRAM : OPI
+MCU <--> FLASH : QSPI
+MCU <--> ANT : RF
+MCU <--> USB : USB / UART0 (dev mode, flashing)
+
+CAM --> MCU : DVP 8-bit + PCLK/HREF/VSYNC
+MCU --> CAM : SCCB (I²C) + XCLK 20 MHz
+MCU --> FET : GPIO2 (LED_AXIS)\nGPIO14 (LED_OFF)
+FET --> LEDA : sink
+FET --> LEDB : sink
+
+MCU --> LCD : SPI2 @40 MHz\nSCLK, MOSI, CS, DC
+BTN --> MCU : GPIO38/39/40\n(active low, pull-up, ISR)
+MCU --> BZ : GPIO3 (LEDC PWM)
+@enduml

@@ -1,0 +1,72 @@
+@startuml 02_sw_modules
+title SpyScan V1 — Software structural diagram (layers and modules)
+skinparam componentStyle rectangle
+skinparam defaultFontName Helvetica
+skinparam shadowing false
+
+package "Application layer" {
+  [app_ctrl\nmode manager,\nresource arbitration] as APP
+  [ui_fsm\nscreens + navigation\n(portable C, no HW)] as UI
+  [history\nsession results] as HIST
+  [diag\nbattery, heap, stacks,\nsensor status] as DIAG
+}
+
+package "Detection services" {
+  [optical_pipeline\nON−OFF diff, noise stats,\nadaptive threshold, blobs,\npersistence tracker,\noff-axis ratio test] as OPT
+  [traffic_table\nper-MAC: role, BSSID, ch,\nRSSI EMA, frames/s, uplink B/s] as TT
+  [chan_hopper\nsurvey sweep / channel lock] as HOP
+  [challenge\nPRBS stimulus, binning,\ntest statistic, permutation\nthreshold, likelihood level] as CH
+  [rssi_locator\nEMA + trend] as LOC
+  [oui_db\nvendor lookup,\nlocally-administered flag] as OUI
+}
+
+package "Drivers / BSP" {
+  [cam_drv\nesp32-camera wrapper,\nAEC/AGC/AWB lock,\nVSYNC frame counter] as CAMD
+  [led_drv\nGPIO groups,\nframe-synchronous toggling] as LEDD
+  [lcd_drv\nesp_lcd ILI9341 +\nminimal 2D/font] as LCDD
+  [btn_drv\nGPIO ISR + debounce timer\n→ event queue] as BTND
+  [batt_mon\nADC oneshot + cali] as BATD
+  [wifi_mon\npromiscuous cb →\n16-byte records → ringbuf] as WIFID
+  [devlog\nUSB serial streaming\n(CSV / binary frames)] as LOG
+  [board_pins.h\nsingle source of pin map] as PINS
+}
+
+package "ESP-IDF v5.x" {
+  [FreeRTOS] as RTOS
+  [esp_wifi] as EW
+  [esp32-camera component] as EC
+  [esp_lcd / driver/spi] as EL
+  [driver/gpio, esp_timer,\nesp_adc, task_wdt] as ED
+}
+
+APP --> UI
+APP --> OPT
+APP --> TT
+APP --> CH
+UI --> HIST
+UI --> DIAG
+UI --> LCDD
+BTND --> UI : button events
+OPT --> CAMD
+OPT --> LEDD
+TT --> WIFID
+TT --> OUI
+HOP --> WIFID
+CH --> TT : binned uplink series
+LOC --> TT
+DIAG --> BATD
+OPT ..> LOG
+CH ..> LOG
+TT ..> LOG
+
+CAMD --> EC
+WIFID --> EW
+LCDD --> EL
+BTND --> ED
+LEDD --> ED
+BATD --> ED
+CAMD ..> PINS
+LEDD ..> PINS
+LCDD ..> PINS
+BTND ..> PINS
+@enduml

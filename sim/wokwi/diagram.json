@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "author": "Rahaman Md Afifur",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-s3-devkitc-1", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    { "type": "wokwi-ili9341", "id": "lcd", "top": -160, "left": 230, "rotate": 90, "attrs": {} },
+    { "type": "wokwi-pushbutton", "id": "btnUp", "top": 250, "left": 220, "attrs": { "color": "blue", "label": "UP" } },
+    { "type": "wokwi-pushbutton", "id": "btnSel", "top": 250, "left": 320, "attrs": { "color": "green", "label": "SELECT" } },
+    { "type": "wokwi-pushbutton", "id": "btnBack", "top": 250, "left": 420, "attrs": { "color": "red", "label": "BACK" } },
+    { "type": "wokwi-led", "id": "ledAxis", "top": -80, "left": -140, "attrs": { "color": "red", "label": "LED_AXIS" } },
+    { "type": "wokwi-resistor", "id": "rAxis", "top": -20, "left": -150, "rotate": 90, "attrs": { "value": "220" } },
+    { "type": "wokwi-led", "id": "ledOff", "top": -80, "left": -80, "attrs": { "color": "red", "label": "LED_OFF" } },
+    { "type": "wokwi-resistor", "id": "rOff", "top": -20, "left": -90, "rotate": 90, "attrs": { "value": "220" } },
+    { "type": "wokwi-potentiometer", "id": "potBat", "top": 120, "left": -200, "attrs": { "label": "Battery" } },
+    { "type": "wokwi-potentiometer", "id": "potDist", "top": 220, "left": -200, "attrs": { "label": "Distance" } },
+    { "type": "wokwi-buzzer", "id": "bz", "top": 330, "left": -120, "attrs": { "volume": "0.1" } }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+
+    [ "lcd:VCC", "esp:3V3.1", "red", [] ],
+    [ "lcd:GND", "esp:GND.2", "black", [] ],
+    [ "lcd:LED", "esp:3V3.2", "red", [] ],
+    [ "lcd:RST", "esp:3V3.2", "red", [] ],
+    [ "lcd:SCK", "esp:47", "orange", [] ],
+    [ "lcd:MOSI", "esp:21", "green", [] ],
+    [ "lcd:CS", "esp:41", "blue", [] ],
+    [ "lcd:D/C", "esp:42", "violet", [] ],
+
+    [ "btnUp:1.l", "esp:38", "blue", [] ],
+    [ "btnUp:2.l", "esp:GND.3", "black", [] ],
+    [ "btnSel:1.l", "esp:39", "green", [] ],
+    [ "btnSel:2.l", "esp:GND.3", "black", [] ],
+    [ "btnBack:1.l", "esp:40", "red", [] ],
+    [ "btnBack:2.l", "esp:GND.3", "black", [] ],
+
+    [ "esp:2", "rAxis:2", "red", [] ],
+    [ "rAxis:1", "ledAxis:A", "red", [] ],
+    [ "ledAxis:C", "esp:GND.1", "black", [] ],
+    [ "esp:14", "rOff:2", "red", [] ],
+    [ "rOff:1", "ledOff:A", "red", [] ],
+    [ "ledOff:C", "esp:GND.1", "black", [] ],
+
+    [ "potBat:VCC", "esp:3V3.1", "red", [] ],
+    [ "potBat:GND", "esp:GND.1", "black", [] ],
+    [ "potBat:SIG", "esp:1", "yellow", [] ],
+    [ "potDist:VCC", "esp:3V3.1", "red", [] ],
+    [ "potDist:GND", "esp:GND.1", "black", [] ],
+    [ "potDist:SIG", "esp:10", "yellow", [] ],
+
+    [ "bz:2", "esp:3", "orange", [] ],
+    [ "bz:1", "esp:GND.1", "black", [] ]
+  ],
+  "dependencies": {}
+}

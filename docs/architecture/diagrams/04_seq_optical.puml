@@ -1,0 +1,40 @@
+@startuml 04_seq_optical
+title Optical scan — frame-synchronous LED modulation (4-frame cycle, baseline)
+skinparam defaultFontName Helvetica
+skinparam shadowing false
+
+participant "OV2640" as CAM
+participant "cam_task" as CT
+participant "led_drv" as LED
+participant "opt_task" as OT
+participant "ui_task" as UI
+
+== scan start ==
+CT -> CAM : lock AEC/AGC/AWB,\nfixed exposure & gain
+loop every 4 frames
+  CAM -> CT : VSYNC (frame n) — LEDs ON since n−1
+  CT -> CT : discard (transition frame,\nrolling-shutter mix)
+  CAM -> CT : VSYNC (frame n+1)
+  CT -> CT : keep as ON frame
+  CT -> LED : LED_AXIS = OFF
+  CAM -> CT : VSYNC (frame n+2)
+  CT -> CT : discard (transition)
+  CAM -> CT : VSYNC (frame n+3)
+  CT -> CT : keep as OFF frame
+  CT -> LED : LED_AXIS = ON
+  CT -> OT : q_frames ← (ON, OFF)
+  OT -> OT : D = ON − OFF (saturating, int16)
+  OT -> OT : μ, σ of D (robust: median / MAD)
+  OT -> OT : blobs where D > μ + kσ
+  OT -> OT : track blobs; confirm if\npresent in N pairs within r px
+  OT -> UI : candidates (x, y, peak SNR, age)
+end
+== optional off-axis test for a confirmed candidate ==
+OT -> LED : next cycle uses LED_OFF instead of LED_AXIS
+OT -> OT : ratio R = D_axis / D_off at candidate\nretroreflector-like if R ≫ 1 (threshold from E3)
+OT -> UI : candidate class + evidence
+note over CT, LED
+  If E1 shows that toggling during vertical blanking gives clean frames,
+  the cycle is shortened to 2 frames (ON, OFF) → 2× pair rate.
+end note
+@enduml

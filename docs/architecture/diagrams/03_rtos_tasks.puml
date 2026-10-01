@@ -1,0 +1,50 @@
+@startuml 03_rtos_tasks
+title SpyScan V1 — FreeRTOS tasks, queues and core affinity
+skinparam defaultFontName Helvetica
+skinparam shadowing false
+left to right direction
+
+node "Core 1 (APP_CPU) — optical path" {
+  rectangle "cam_task\nprio 6\ngrab frame, LED toggle on VSYNC" as T_CAM
+  rectangle "opt_task\nprio 5\ndiff + detect + track" as T_OPT
+}
+
+node "Core 0 (PRO_CPU) — radio + UI" {
+  rectangle "Wi-Fi driver task\n(ESP-IDF, prio 23)\npromiscuous callback" as T_WCB
+  rectangle "traffic_task\nprio 5\ndrain ringbuf, update table,\n250 ms binning, hopper" as T_TRF
+  rectangle "ui_task\nprio 4\nevents + redraw ≤ 20 Hz" as T_UI
+  rectangle "log_task\nprio 2\nUSB streaming" as T_LOG
+}
+
+queue "q_frames\n(2 × frame-pair ptrs,\nbuffers in PSRAM)" as Q_FR
+queue "rb_pkts\nringbuf 32 KB\n(16-B records)" as RB
+queue "q_ui_events\n(buttons, results)" as Q_UI
+queue "q_log\n(records)" as Q_LOG
+
+T_CAM --> Q_FR
+Q_FR --> T_OPT
+T_OPT --> Q_UI : candidates
+T_WCB --> RB : non-blocking send
+RB --> T_TRF
+T_TRF --> Q_UI : table / challenge result
+Q_UI --> T_UI
+T_OPT --> Q_LOG
+T_TRF --> Q_LOG
+Q_LOG --> T_LOG
+
+rectangle "esp_timer callbacks\n• button debounce (5 ms)\n• batt sample (1 Hz)\n• channel hop / slot clock" as TIM
+TIM --> Q_UI
+TIM --> T_TRF
+
+note bottom of T_WCB
+  Callback budget: copy 16 bytes
+  (ts, MAC, len, RSSI, ch, DS bits, type)
+  — no allocation, no logging.
+end note
+note bottom of T_CAM
+  Mode exclusivity (V1):
+  OPTICAL mode → Wi-Fi stopped
+  WIRELESS mode → camera powered down
+  Simultaneous use evaluated in E4.
+end note
+@enduml

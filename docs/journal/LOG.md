@@ -2,6 +2,17 @@
 
 Dated entries, newest first. Each entry: what was done · decisions · open questions · next step.
 
+## 2026-10-02 — Parts list, architecture draft, simulation
+- Parts list finalised for ordering (see the BOM in the ТЗ §4.1). The display changed from ST7789 to **ILI9341 2.4"** because the Wokwi simulator supports it, so the simulated UI is the real UI. Added test targets: an ESP32-CAM and a 2.4 GHz mini Wi-Fi camera.
+- Architecture draft 0.1 (`docs/architecture/ARCHITECTURE.md`): HW block diagram, interface table, draft pin map (to verify on the real board), LED driver calculation, power budget (`tools/power_budget.py`: ≈ 5.3 h estimated vs the 1.5 h target), FreeRTOS task design, timing analysis, UI state machine, risks. All diagrams in PlantUML.
+- Wokwi HMI simulation (`sim/wokwi/`): ESP32-S3 + ILI9341 + 3 buttons + LEDs + buzzer + battery/distance pots; real `ui_fsm.c` and `challenge.c` running on synthetic data.
+- PC tests (`sim/test/`): 22 UI transition checks pass; Monte-Carlo test of the challenge detector.
+- **Findings from the simulation (synthetic data, design-level):**
+  - K ≥ 10 slots is mandatory, because the minimum achievable p is 1/C(K, K/2).
+  - A phone viewing the stream also correlates with the stimulus, so the **direction feature** (uplink vs downlink) is added to separate source from viewer (hypothesis H4).
+- Found: the ТЗ edit removed the requirement IDs and the [F]/[A]/[T] legend, but sections 2.4.1, 6.3 and Appendix B still reference them. To fix in ТЗ v2.1.
+- **Next:** E2 sniffer firmware for the owned DevKit; Python capture and analysis; ESP-IDF install on the Mac.
+
 ## 2026-10-01 — Project restart, ТЗ v2
 - Studied the course requirements, the ТЗ template, the original idea (CamGuard 360) and the defended draft ТЗ.
 - Defense feedback (as recalled by the developer): the goal must state the **problem**, not describe the device. The goal was rewritten in ТЗ v2 §1.3.

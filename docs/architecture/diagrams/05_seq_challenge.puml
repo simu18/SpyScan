@@ -1,0 +1,42 @@
+@startuml 05_seq_challenge
+title Wireless scan — survey → challenge → locate
+skinparam defaultFontName Helvetica
+skinparam shadowing false
+
+actor User
+participant "ui_task" as UI
+participant "traffic_task" as TT
+participant "wifi_mon\n(promiscuous cb)" as WM
+participant "challenge" as CH
+
+== Survey ==
+User -> UI : WIRELESS SCAN
+UI -> TT : start survey
+loop channels 1..13 (dwell ≈ 1 s, from E2)
+  TT -> WM : set channel c
+  WM -> TT : records (MAC, len, RSSI, DS bits)
+  TT -> TT : update per-MAC table
+end
+TT -> UI : table sorted by uplink B/s;\nstreaming devices highlighted
+
+== Challenge (selected device or top candidates) ==
+User -> UI : CHALLENGE
+UI -> CH : start(target ch, K slots, T s)
+CH -> CH : generate PRBS s[1..K] (balanced)
+TT -> WM : lock channel
+loop k = 1..K
+  CH -> UI : prompt s[k] ? "MOVE" : "STAY STILL"
+  UI -> User : prompt + countdown
+  TT -> CH : uplink bytes per 250 ms bin, per MAC
+end
+CH -> CH : per MAC: x_k = mean rate in slot k\nstatistic S = corr(x, s) (or Welch t ON vs OFF)
+CH -> CH : null: 1000 random permutations of s\np = P(S_perm ≥ S)
+CH -> CH : level = HIGH if p < 0.01, LOW if p < 0.05, else NONE
+CH -> UI : result per MAC (+ p, S in dev mode)
+
+== Locate ==
+User -> UI : LOCATE flagged MAC
+loop every 250 ms
+  TT -> UI : RSSI EMA + trend
+end
+@enduml

@@ -11,3 +11,5 @@ __pycache__/
 # Editors
 .vscode/
 .idea/
+sim/test/tu
+sim/test/tc

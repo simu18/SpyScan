@@ -13,7 +13,7 @@ Tiny Wi-Fi and SD-card cameras are cheap and easy to hide in rented rooms, hotel
 | **2. Wi-Fi traffic stimulus–response** | A streaming camera's encoder bit rate follows changes in the scene. Passive 2.4 GHz monitoring records per-device uplink rate. A pseudo-random "move / still" stimulus is applied, and the device tests which transmitter's traffic correlates with it. | Which MAC is a camera, plus RSSI guidance towards it |
 
 Hardware: ESP32-S3 (+ OV2640, red LED ring, ST7789 display, 3 buttons, Li-Po). Firmware: ESP-IDF / FreeRTOS, C.
-Full specification: [`docs/tz/TZ_SpyScan_v2.md`](docs/tz/TZ_SpyScan_v2.md).
+Full specification: [`docs/tz/TZ_SpyScan_v2.md`](docs/tz/TZ_SpyScan_v2.md) · Architecture: [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md) · Simulation: [`sim/README.md`](sim/README.md)
 
 ## Repository layout
 ```
@@ -27,7 +27,10 @@ docs/
 experiments/     Protocols, raw data and results for E1..E4 and AT-1..AT-11
 firmware/        ESP-IDF project(s)
 hardware/        Schematics, wiring, BOM, enclosure CAD/STL
-tools/           Python tools: serial capture, analysis, plotting
+tools/           Python tools: serial capture, analysis, power budget
+sim/
+  wokwi/         Wokwi HMI simulation (real UI + detector code, synthetic data)
+  test/          PC unit tests of hardware-independent modules
 ```
 
 ## Status

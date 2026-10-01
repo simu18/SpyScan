@@ -1,0 +1,47 @@
+@startuml 06_ui_fsm
+title SpyScan V1 — UI state machine (buttons: UP, SEL, BACK)
+skinparam defaultFontName Helvetica
+skinparam shadowing false
+
+[*] --> Boot
+Boot --> Menu : init done\n(errors recorded per subsystem)
+
+state Menu : UP = next item\nSEL = enter
+Menu --> Optical : SEL [item=Optical]\n[camera OK]
+Menu --> Wireless : SEL [item=Wireless]\n[Wi-Fi OK]
+Menu --> History : SEL [item=History]
+Menu --> Diag : SEL [item=Diagnostics]
+
+state Optical {
+  [*] --> Live
+  Live : preview + markers\nUP = toggle overlay
+  Live --> OffAxis : SEL [candidate in centre]
+  OffAxis : off-axis ratio test
+  OffAxis --> Live : result shown
+}
+Optical --> Menu : BACK
+
+state Wireless {
+  [*] --> Survey
+  state Survey : table, UP = scroll\nSEL = choose device
+  state Challenge : prompts MOVE / STILL\nprogress K slots
+  state Result : NONE / LOW / HIGH
+  state Locate : RSSI meter + trend
+  Survey --> Challenge : SEL
+  Challenge --> Result : K slots done
+  Challenge --> Survey : BACK (abort)
+  Result --> Locate : SEL
+  Result --> Survey : BACK
+  Locate --> Result : BACK
+}
+Wireless --> Menu : BACK (from Survey)
+
+History --> Menu : BACK
+Diag --> Menu : BACK
+
+state LowBattery #pink
+Menu --> LowBattery : VBAT < V_cut
+Optical --> LowBattery : VBAT < V_cut
+Wireless --> LowBattery : VBAT < V_cut
+LowBattery : scanning stopped,\nwarning shown
+@enduml
