@@ -3,37 +3,13 @@
 **Portable embedded device for detecting hidden video cameras**
 *(semester prototype V1)*
 
-| | |
-|---|---|
-| Course | Embedded Systems (ITMO), project track, stream 1.3 |
-| Instructor | Zinovichev E. S. |
-| Developer | Rahaman Md Afifur, group P3330 |
-| Document version | **2.0** (revision of the defended draft v1 "CamGuard 360") |
-| Date | 2026-10-01 |
-| Status | Draft for instructor review |
-| Basis | ГОСТ 19.201-78; course ТЗ template |
+- **Course:** Embedded Systems (ITMO), project track, stream 1.3
+- **Instructor:** Zinovichev E. S.
+- **Developer:** Rahaman Md Afifur, group P3330
+- **Document version:** **2.0** (revision of the defended draft v1 "CamGuard 360")
+- **Date:** 2026-10-01
 
-### Revision history
 
-| Version | Date | Changes |
-|---|---|---|
-| 1.0 | 09.2026 | Draft defended as "CamGuard 360". |
-| 2.0 | 2026-10-01 | The goal is now stated in terms of the problem, following the defense feedback. Requirements are measurable and have IDs. The optical method changed from a brightness threshold to differential (LED ON/OFF) retroreflection imaging. The wireless method changed from an AP/BLE list scan to passive Wi-Fi traffic analysis with stimulus–response correlation. Added a bill of materials, a dated schedule and acceptance tests with pass criteria. Renamed to SpyScan. |
-
-### Conventions used in this document
-
-Every technical statement that matters for the design is tagged with how much we actually know:
-
-| Tag | Meaning |
-|---|---|
-| **[F] Fact** | Supported by physics, datasheets, standards or published research (with a reference). |
-| **[A] Assumption** | Believed true, not yet verified; must be checked. |
-| **[H] Hypothesis** | Something we think may work; tested by a named experiment (E-x). |
-| **[D] Decision** | A design choice we make deliberately, with justification. |
-| **[T] Target** | A numerical requirement we aim for; the final value is confirmed or revised by measurement. |
-| **[M] Measured** | An experimental result. *(None exist yet. This document contains no measured results.)* |
-
-Requirement priorities: **M** = mandatory for acceptance; **S** = should (planned, not blocking); **C** = could (if time permits).
 
 ---
 
@@ -137,9 +113,9 @@ A **developer mode** streams raw data (frames or difference maps, per-MAC traffi
 
 The project is carried out individually.
 
-| Member | Role | Responsibilities |
-|---|---|---|
-| Rahaman Md Afifur (P3330) | Developer (all roles) | Research and experiments; hardware design and assembly; firmware (ESP-IDF, C); signal-processing and detection algorithms; PC analysis tools (Python); UI; enclosure; testing; documentation, report, defense |
+- **Member:** Rahaman Md Afifur (P3330)
+- **Role:** Developer (all roles)
+- **Responsibilities:** Research and experiments; hardware design and assembly; firmware (ESP-IDF, C); signal-processing and detection algorithms; PC analysis tools (Python); UI; enclosure; testing; documentation, report, defense
 
 ---
 
@@ -149,60 +125,50 @@ The project is carried out individually.
 
 #### 2.1.1 General
 
-| ID | Requirement | Pri. |
-|---|---|---|
-| FR-G1 | The device shall provide two inspection modes, **Optical scan** and **Wireless scan**, selectable from a menu with physical buttons. | M |
-| FR-G2 | All detection functions shall work autonomously, without Internet, cloud services, a smartphone or a PC. | M |
-| FR-G3 | The device shall never present a result as proof. Results shall be worded as *candidates* or *likelihood* levels, with the evidence shown (for example "retroreflection: strong, off-axis response: none"). | M |
-| FR-G4 | A **developer mode** shall stream raw and processed data over USB (CSV/binary over serial) for offline analysis. | M |
-| FR-G5 | Scan results (time, mode, candidates, flagged MACs, scores) shall be kept in RAM for the session and be viewable in a history screen. | S |
-| FR-G6 | Results shall be saved to non-volatile storage (flash/microSD). | C |
+- The device shall provide two inspection modes, **Optical scan** and **Wireless scan**, selectable from a menu with physical buttons.
+- All detection functions shall work autonomously, without Internet, cloud services, a smartphone or a PC.
+- The device shall never present a result as proof. Results shall be worded as *candidates* or *likelihood* levels, with the evidence shown (for example "retroreflection: strong, off-axis response: none").
+- A **developer mode** shall stream raw and processed data over USB (CSV/binary over serial) for offline analysis.
+- Scan results (time, mode, candidates, flagged MACs, scores) shall be kept in RAM for the session and be viewable in a history screen.
+- Results shall be saved to non-volatile storage (flash/microSD).
 
 #### 2.1.2 Optical scan (Method 1: differential retroreflection)
 
-| ID | Requirement | Pri. |
-|---|---|---|
-| FR-O1 | The camera and the **on-axis** LED group shall be driven synchronously so that frames are captured alternately with the LEDs ON and OFF. [D] | M |
-| FR-O2 | Camera auto-exposure, auto-gain and auto-white-balance shall be locked during a scan. Without this, ON/OFF frames are not comparable. [D] | M |
-| FR-O3 | The detector shall compute the difference image (ON − OFF). It shall detect local maxima and blobs exceeding an **adaptive threshold** derived from the noise statistics of the difference image (for example mean + k·σ, with k set from E1 data). Fixed brightness thresholds shall not be used. [D] | M |
-| FR-O4 | A candidate shall be confirmed only if it persists across N consecutive ON/OFF pairs within a position tolerance of r pixels. N and r are determined experimentally (E1). | M |
-| FR-O5 | Self-luminous sources (lamps, indicator LEDs, screens) shall be suppressed by the differential principle and not reported as candidates. | M |
-| FR-O6 | **Off-axis test:** for each confirmed candidate, the device shall compare the response to on-axis LEDs with the response to off-axis LEDs. It shall classify the candidate as *retroreflector-like* (on-axis ≫ off-axis) or *specular/diffuse-like*. [H1, tested in E3] | S |
-| FR-O7 | Candidates shall be shown on the live preview with markers and a strength level (for example 3 bars), and the number of candidates shall be displayed. | M |
-| FR-O8 | An audible or vibration cue shall indicate a strong lens candidate in the centre of the field of view, so the user can find it without looking at the screen. | C |
+- The camera and the **on-axis** LED group shall be driven synchronously so that frames are captured alternately with the LEDs ON and OFF. [D]
+- Camera auto-exposure, auto-gain and auto-white-balance shall be locked during a scan. Without this, ON/OFF frames are not comparable. [D]
+- The detector shall compute the difference image (ON − OFF). It shall detect local maxima and blobs exceeding an **adaptive threshold** derived from the noise statistics of the difference image (for example mean + k·σ, with k set from E1 data). Fixed brightness thresholds shall not be used. [D]
+- A candidate shall be confirmed only if it persists across N consecutive ON/OFF pairs within a position tolerance of r pixels. N and r are determined experimentally (E1).
+- Self-luminous sources (lamps, indicator LEDs, screens) shall be suppressed by the differential principle and not reported as candidates.
+- **Off-axis test:** for each confirmed candidate, the device shall compare the response to on-axis LEDs with the response to off-axis LEDs. It shall classify the candidate as *retroreflector-like* (on-axis ≫ off-axis) or *specular/diffuse-like*. [H1, tested in E3]
+- Candidates shall be shown on the live preview with markers and a strength level (for example 3 bars), and the number of candidates shall be displayed.
+- An audible or vibration cue shall indicate a strong lens candidate in the centre of the field of view, so the user can find it without looking at the screen.
 
 #### 2.1.3 Wireless scan (Method 2: Wi-Fi traffic analysis)
 
-| ID | Requirement | Pri. |
-|---|---|---|
-| FR-W1 | The device shall operate the Wi-Fi radio in **passive (promiscuous / monitor) mode**. It shall not transmit except where needed for the optional AP scan. | M |
-| FR-W2 | **Survey:** the device shall sweep channels 1–13. For every observed transmitter it shall maintain: MAC, role (AP / client, from the 802.11 DS bits), BSSID it is associated with, channel, RSSI (smoothed), frames/s, and uplink bytes/s. | M |
-| FR-W3 | The vendor name shall be derived from the MAC OUI using an on-device table of relevant vendors (camera/IoT SoC vendors, common phone/PC vendors). Locally administered (randomised) MACs shall be marked as such. | S |
-| FR-W4 | Devices with sustained uplink traffic (a "streaming" pattern) shall be highlighted as candidates for the challenge. The criterion shall be defined from E2 data. | M |
-| FR-W5 | **Challenge:** the device shall generate a pseudo-random binary stimulus sequence of K slots, each of duration T, and prompt the user for each slot. Prompt variants are (a) "MOVE in front of the area" / "STAY STILL", or (b) "LIGHTS ON" / "LIGHTS OFF". The receiver shall stay on the target's channel. K and T are determined in E2. | M |
-| FR-W6 | For each monitored MAC, the detector shall compute a test statistic between the stimulus sequence and the binned uplink byte rate, such as a normalised correlation or a two-sample test of ON versus OFF slots. The decision threshold shall be set from the **null distribution** (permutation test or stimulus-free recordings) for a target false-alarm probability per device of ≤ 1 % [T]. | M |
-| FR-W7 | The result per device shall be shown as a likelihood level (for example NONE / LOW / HIGH) together with the statistic and the p-value (the latter in developer mode). | M |
-| FR-W8 | **Locate:** for a selected MAC, the device shall display the smoothed RSSI with at least 2 updates/s, as a number and a bar, plus a trend indicator (rising / falling). | M |
-| FR-W9 | A conventional AP scan (SSID, BSSID, RSSI, channel) shall be available as a sub-view. | S |
-| FR-W10 | A BLE advertisement scan (name, address, RSSI) shall be available as a sub-view. It is informational only and is not used in the decision. [D: BLE is not the video channel of the target camera class.] | C |
+- The device shall operate the Wi-Fi radio in **passive (promiscuous / monitor) mode**. It shall not transmit except where needed for the optional AP scan.
+- **Survey:** the device shall sweep channels 1–13. For every observed transmitter it shall maintain: MAC, role (AP / client, from the 802.11 DS bits), BSSID it is associated with, channel, RSSI (smoothed), frames/s, and uplink bytes/s.
+- The vendor name shall be derived from the MAC OUI using an on-device table of relevant vendors (camera/IoT SoC vendors, common phone/PC vendors). Locally administered (randomised) MACs shall be marked as such.
+- Devices with sustained uplink traffic (a "streaming" pattern) shall be highlighted as candidates for the challenge. The criterion shall be defined from E2 data.
+- **Challenge:** the device shall generate a pseudo-random binary stimulus sequence of K slots, each of duration T, and prompt the user for each slot. Prompt variants are (a) "MOVE in front of the area" / "STAY STILL", or (b) "LIGHTS ON" / "LIGHTS OFF". The receiver shall stay on the target's channel. K and T are determined in E2.
+- For each monitored MAC, the detector shall compute a test statistic between the stimulus sequence and the binned uplink byte rate, such as a normalised correlation or a two-sample test of ON versus OFF slots. The decision threshold shall be set from the **null distribution** (permutation test or stimulus-free recordings) for a target false-alarm probability per device of ≤ 1 % [T].
+- The result per device shall be shown as a likelihood level (for example NONE / LOW / HIGH) together with the statistic and the p-value (the latter in developer mode).
+- **Locate:** for a selected MAC, the device shall display the smoothed RSSI with at least 2 updates/s, as a number and a bar, plus a trend indicator (rising / falling).
+- A conventional AP scan (SSID, BSSID, RSSI, channel) shall be available as a sub-view.
+- A BLE advertisement scan (name, address, RSSI) shall be available as a sub-view. It is informational only and is not used in the decision. [D: BLE is not the video channel of the target camera class.]
 
 #### 2.1.4 User interface
 
-| ID | Requirement | Pri. |
-|---|---|---|
-| FR-U1 | The UI shall use three buttons (Up/Mode, Select, Back) and a colour display of at least 240×240 pixels, capable of showing a camera preview with markers. | M |
-| FR-U2 | Screens: main menu; optical scan (preview + candidates); wireless survey (sortable table); challenge (prompt + progress + result); locate (RSSI meter); history; settings/diagnostics (battery, firmware version, sensor status). | M |
-| FR-U3 | The battery level shall be displayed. A low-battery warning shall be shown, and a safe shutdown of scanning functions shall occur below a set voltage. | M |
-| FR-U4 | The UI shall remain responsive (button reaction ≤ 200 ms [T]) during scanning. | M |
+- The UI shall use three buttons (Up/Mode, Select, Back) and a colour display of at least 240×240 pixels, capable of showing a camera preview with markers.
+- Screens: main menu; optical scan (preview + candidates); wireless survey (sortable table); challenge (prompt + progress + result); locate (RSSI meter); history; settings/diagnostics (battery, firmware version, sensor status).
+- The battery level shall be displayed. A low-battery warning shall be shown, and a safe shutdown of scanning functions shall occur below a set voltage.
+- The UI shall remain responsive (button reaction ≤ 200 ms [T]) during scanning.
 
 ### 2.2 Reliability requirements
 
-| ID | Requirement | Pri. |
-|---|---|---|
-| NR-R1 | The device shall operate continuously for ≥ 30 min in a demonstration scenario (mode switching, both scans) without a critical failure or manual reboot. | M |
-| NR-R2 | The failure of one subsystem (camera not detected, display error) shall not disable the other mode. Errors shall be shown on screen (or on the USB log if the display fails). The firmware shall not enter a reboot loop. | M |
-| NR-R3 | A hardware watchdog shall be enabled. Task stack and heap usage shall be monitored and reported in diagnostics. | S |
-| NR-R4 | Repeatability: under unchanged conditions, repeated optical scans of the same scene shall produce the same confirmed candidates in ≥ 90 % of repetitions [T]. | M |
+- The device shall operate continuously for ≥ 30 min in a demonstration scenario (mode switching, both scans) without a critical failure or manual reboot.
+- The failure of one subsystem (camera not detected, display error) shall not disable the other mode. Errors shall be shown on screen (or on the USB log if the display fails). The firmware shall not enter a reboot loop.
+- A hardware watchdog shall be enabled. Task stack and heap usage shall be monitored and reported in diagnostics.
+- Repeatability: under unchanged conditions, repeated optical scans of the same scene shall produce the same confirmed candidates in ≥ 90 % of repetitions [T].
 
 ### 2.3 Operating conditions
 
