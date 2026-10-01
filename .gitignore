@@ -1,0 +1,13 @@
+.DS_Store
+Read_me_first.md
+# ESP-IDF
+build/
+sdkconfig.old
+managed_components/
+# Python
+__pycache__/
+*.pyc
+.venv/
+# Editors
+.vscode/
+.idea/
