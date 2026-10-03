@@ -388,8 +388,12 @@ void loop() {
     if (now - t_bat > 250) {
         t_bat = now;
         vbat = read_vbat_sim();
-        if (vbat < V_CUT && ui.st != ST_LOWBAT && ui.st != ST_BOOT) post(EV_LOWBAT);
-        else if (ui.st == ST_LOWBAT && vbat > V_CUT + 0.1f) post(EV_BAT_OK);
+        /* Debounce: require 8 consecutive samples (2 s) below the cut-off so a
+           load transient (Wi-Fi TX burst, LED pulse) cannot trigger LOWBAT. */
+        static uint8_t low_cnt = 0;
+        low_cnt = (vbat < V_CUT) ? (uint8_t)min(low_cnt + 1, 255) : 0;
+        if (low_cnt >= 8 && ui.st != ST_LOWBAT && ui.st != ST_BOOT) post(EV_LOWBAT);
+        else if (ui.st == ST_LOWBAT && vbat > V_CUT + 0.1f) post(EV_BAT_OK);   /* 0.1 V hysteresis */
     }
 
     /* ---- optical: frame clock + LED sync (4-frame cycle) ---- */

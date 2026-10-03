@@ -2,6 +2,7 @@
 Read_me_first.md
 # ESP-IDF
 build/
+.pio/
 sdkconfig.old
 managed_components/
 # Python
@@ -13,3 +14,7 @@ __pycache__/
 .idea/
 sim/test/tu
 sim/test/tc
+docs/reference/Course_Project_instructions_RU.md
+docs/reference/Project_Idea_CamGuard360.md
+docs/reference/TZ_v1_draft_defended.md
+

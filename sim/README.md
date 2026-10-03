@@ -16,6 +16,10 @@ ESP32-S3 DevKitC-1 + ILI9341 + 3 buttons + LED channels + buzzer. It uses **the 
 3. Use the **"+" → Upload file(s)** button for `board_pins.h`, `ui_fsm.h/.c`, `challenge.h/.c`, `sim_sources.h/.c`, `libraries.txt`.
 4. Press ▶. The Serial Monitor shows every state transition and the challenge statistics.
 
+**Run it from VS Code with PlatformIO:** Open `sim/wokwi/` as the workspace, run `pio run` once to build the firmware, then start the Wokwi extension. The `platformio.ini` and `wokwi.toml` in that folder point the extension at the generated ESP32-S3 firmware.
+
+**Start values:** the *Battery* pot starts at full (4.2 V) and the *Distance* pot at about 3 m. Turning *Battery* below 3.4 V for 2 s triggers LOW BATTERY; turning it back above 3.5 V returns to the menu.
+
 **Demo script (≈ 2 min):**
 - Menu → *Optical scan*. The AXIS LED blinks in the 4-frame ON,ON,OFF,OFF cycle, slowed to 4 fps.
 - UP switches RAW / ON−OFF views. In the diff view the lamp disappears; this is the principle of FR-O5.
