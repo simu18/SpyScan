@@ -23,6 +23,13 @@ Most commercial mini cameras are expected to use **H.264/H.265**, where inter-fr
 
 So both stimuli are tested on both cameras.
 
+### Amendment v0.2 (2026-10-08, after the first mini-camera runs)
+- The A9-type camera turned out to be **constant-bit-rate**: its uplink did not respond to motion (ON/OFF = 1.00).
+- The statistic is now **two-sided** (|S|, the sign is reported), because the direction of the response is not known in advance.
+- New stimuli: **`cover`** (cover / uncover the lens) and **`flash`** (flashlight into the lens).
+- **H5:** covering the lens lowers the uplink even for CBR cameras (black frames cannot carry the target bit rate).
+- Runs before v0.2 are reported with both the one-sided and the two-sided p.
+
 ## 2. Setup
 
 - **Sniffer:** the owned ESP32-S3 DevKit running `firmware/` (passive, native USB Serial/JTAG port, `/dev/cu.usbmodem*`), connected by USB to the laptop, placed 1–3 m from the camera.

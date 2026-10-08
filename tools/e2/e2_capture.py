@@ -142,6 +142,7 @@ def main():
     r = sub.add_parser("record")
     r.add_argument("--channel", type=int, required=True)
     r.add_argument("--seconds", type=int, default=60)
+    r.add_argument("--focus", default="", help="MAC to capture per-packet (periodicity, Method 1.2)")
 
     c = sub.add_parser("challenge")
     c.add_argument("--channel", type=int, required=True)
@@ -150,7 +151,9 @@ def main():
     c.add_argument("--baseline", type=float, default=20.0,
                    help="STILL warm-up before the first slot, s (video streams need ~20 s to stabilise)")
     c.add_argument("--seed", type=int, default=None)
-    c.add_argument("--stimulus", choices=["motion", "light"], default="motion")
+    c.add_argument("--stimulus", choices=["motion", "light", "cover", "flash"], default="motion",
+                   help="motion: move/still in view; light: room light on/off; "
+                        "cover: cover/uncover the lens; flash: phone flashlight into the lens on/off")
     c.add_argument("--target", default="", help="ground-truth camera MAC (for the record), optional")
 
     a = ap.parse_args()
@@ -183,20 +186,29 @@ def main():
 
         elif a.mode == "record":
             dev.cmd(f"ch {a.channel}")
-            meta.update(channel=a.channel, seconds=a.seconds)
+            meta.update(channel=a.channel, seconds=a.seconds, focus=a.focus)
+            if a.focus:
+                time.sleep(0.2)
+                dev.cmd(f"focus {a.focus}")      # per-packet capture of this MAC
             dev.cmd("mark record_start")
             t0 = time.time()
             while time.time() - t0 < a.seconds:
                 print(f"\rrecord {time.time() - t0:5.1f}/{a.seconds}s  lines={dev.lines}", end="")
                 time.sleep(0.5)
+            if a.focus:
+                dev.cmd("focus off")
             dev.cmd("mark record_end")
             print()
 
         else:  # challenge
             seed = a.seed if a.seed is not None else int(time.time()) & 0xFFFF
             stim = balanced_prbs(a.k, seed)
-            on_txt, off_txt = (("MOVE  (wave / walk in view)", "STAY STILL") if a.stimulus == "motion"
-                               else ("LIGHTS ON", "LIGHTS OFF"))
+            on_txt, off_txt = {
+                "motion": ("MOVE  (wave / walk in view)", "STAY STILL"),
+                "light":  ("LIGHTS ON", "LIGHTS OFF"),
+                "cover":  ("COVER THE LENS  (hand / cup)", "UNCOVER - lens free"),
+                "flash":  ("FLASHLIGHT INTO THE LENS", "FLASHLIGHT OFF"),
+            }[a.stimulus]
             meta.update(channel=a.channel, k=a.k, t_s=a.t, baseline_s=a.baseline, seed=seed,
                         stimulus=a.stimulus, stim=stim, target=a.target)
             dev.cmd(f"ch {a.channel}")

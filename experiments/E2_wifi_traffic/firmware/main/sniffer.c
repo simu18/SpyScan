@@ -63,6 +63,8 @@ typedef struct {
     uint8_t  role;         /* 'S', 'A', '?' */
     uint8_t  ch;
     uint32_t tx_b, tx_n, rx_b, rx_n;   /* current bin */
+    uint32_t h[4];                     /* tx packet-size histogram (Method 1.3):
+                                          [0]<100  [1]100-699  [2]700-1199  [3]>=1200 */
     int32_t  rssi_sum;
     uint16_t rssi_n;
     uint32_t last_seen_ms;
@@ -76,6 +78,8 @@ static int     s_ap_n;
 
 static volatile uint32_t s_bin_ms   = 100;
 static volatile uint32_t s_hop_ms   = 0;     /* 0 = channel locked */
+static uint8_t  s_focus[6];                  /* per-packet capture target (Method 1.2) */
+static volatile bool     s_focus_on = false;
 static volatile uint8_t  s_channel  = 1;
 static volatile uint32_t s_drops    = 0;
 static volatile uint32_t s_rx_total = 0;
@@ -181,9 +185,14 @@ static void handle(const pkt_rec_t *r)
     /* Transmitter = addr2 */
     sta_t *tx = dev_get(r->a2, r->t_ms);
     tx->tx_b += r->len; tx->tx_n++;
+    tx->h[r->len < 100 ? 0 : r->len < 700 ? 1 : r->len < 1200 ? 2 : 3]++;
     tx->rssi_sum += r->rssi; tx->rssi_n++;
     tx->last_seen_ms = r->t_ms;
     tx->ch = r->ch;
+
+    /* Per-packet capture of one device for periodicity analysis (Method 1.2). */
+    if (s_focus_on && memcmp(r->a2, s_focus, 6) == 0)
+        out("P,%lu,%u\n", (unsigned long)r->t_ms, r->len);
     if (to_ds && !from_ds) { tx->role = 'S'; memcpy(tx->bssid, r->a1, 6); }
     else if (from_ds && !to_ds) { tx->role = 'A'; memcpy(tx->bssid, r->a2, 6); }
 
@@ -209,12 +218,16 @@ static void flush_bin(uint32_t t_end)
         sta_t *d = &s_dev[i];
         if (!d->used || (d->tx_n == 0 && d->rx_n == 0)) continue;
         int rssi = d->rssi_n ? (int)(d->rssi_sum / d->rssi_n) : 0;
-        out("B,%lu,%u," MACFMT ",%lu,%lu,%lu,%lu,%d,%c," MACFMT "\n",
+        /* Fields 1..10 unchanged (back-compatible); 11..14 = tx size histogram. */
+        out("B,%lu,%u," MACFMT ",%lu,%lu,%lu,%lu,%d,%c," MACFMT ",%lu,%lu,%lu,%lu\n",
             (unsigned long)t_end, d->ch, MACARG(d->mac),
             (unsigned long)d->tx_b, (unsigned long)d->tx_n,
             (unsigned long)d->rx_b, (unsigned long)d->rx_n,
-            rssi, d->role, MACARG(d->bssid));
+            rssi, d->role, MACARG(d->bssid),
+            (unsigned long)d->h[0], (unsigned long)d->h[1],
+            (unsigned long)d->h[2], (unsigned long)d->h[3]);
         d->tx_b = d->tx_n = d->rx_b = d->rx_n = 0;
+        d->h[0] = d->h[1] = d->h[2] = d->h[3] = 0;
         d->rssi_sum = 0; d->rssi_n = 0;
     }
 }
@@ -283,6 +296,16 @@ static void cmd_task(void *arg)
             int ms = atoi(line + 4);
             if (ms >= 20 && ms <= 5000) s_bin_ms = (uint32_t)ms;
             out("I,%lu,bin,%lu\n", (unsigned long)t, (unsigned long)s_bin_ms);
+        } else if (strncmp(line, "focus ", 6) == 0) {
+            unsigned m[6];
+            if (strncmp(line + 6, "off", 3) == 0) {
+                s_focus_on = false;
+                out("I,%lu,focus,off\n", (unsigned long)t);
+            } else if (sscanf(line + 6, "%x:%x:%x:%x:%x:%x", &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) == 6) {
+                for (int i = 0; i < 6; ++i) s_focus[i] = (uint8_t)m[i];
+                s_focus_on = true;
+                out("I,%lu,focus," MACFMT "\n", (unsigned long)t, MACARG(s_focus));
+            }
         } else if (strncmp(line, "mark ", 5) == 0) {
             out("M,%lu,%s\n", (unsigned long)t, line + 5);
         } else if (strcmp(line, "stat") == 0) {

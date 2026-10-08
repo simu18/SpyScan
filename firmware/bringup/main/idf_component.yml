@@ -1,0 +1,5 @@
+## Fetched automatically by the ESP-IDF component manager on the first build.
+dependencies:
+  idf: ">=5.3"
+  espressif/esp32-camera: "*"
+  espressif/esp_lcd_ili9341: "^2.0.0"

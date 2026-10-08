@@ -1,7 +1,9 @@
-data/
 firmware/build/
 firmware/.pio/
 firmware/sdkconfig
 firmware/sdkconfig.*.old
 firmware/build.failed/
 firmware/sdkconfig.old
+analysis/wifi_methods_taxonomy.md
+
+ 
