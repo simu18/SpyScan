@@ -1,0 +1,11 @@
+{
+  "mode": "survey",
+  "started": "2026-10-07T20:15:46",
+  "port": "/dev/cu.usbmodem1101",
+  "bin_ms": 100,
+  "note": "",
+  "seconds": 30,
+  "dwell_ms": 500,
+  "ended": "2026-10-07T20:16:17",
+  "lines": 295
+}
