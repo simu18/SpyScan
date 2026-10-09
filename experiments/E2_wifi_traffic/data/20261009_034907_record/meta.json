@@ -1,0 +1,12 @@
+{
+  "mode": "record",
+  "started": "2026-10-09T03:49:07",
+  "port": "/dev/cu.usbmodem101",
+  "bin_ms": 100,
+  "note": "",
+  "channel": 10,
+  "seconds": 60,
+  "focus": "cc:b8:5e:ad:5c:4a",
+  "ended": "2026-10-09T03:50:09",
+  "lines": 1397
+}

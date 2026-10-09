@@ -2,6 +2,22 @@
 
 Dated entries, newest first. Each entry: what was done · decisions · open questions · next step.
 
+## 2026-10-09 (03:46–03:49) — Frame-clock fingerprint CONFIRMED (25 fps); focus capture fixed
+Two 60 s focus-records on camera 2 (`cc:b8:…`), P-line capture now working (fix verified: 12 952 P lines).
+- **Method 1.2 works, with a correction to my earlier skepticism.** Raw per-packet inter-arrival is dominated by <2 ms within-burst gaps (one encoded frame = a burst of fragments). After collapsing packets into bursts (gap > 8 ms), the **inter-burst interval peaks sharply at 40 ms and 80 ms → 25 fps**; 53 % of intervals fall within ±4 ms of 1× or 2× the 40 ms period. Verified independently on the IAT histogram. See `…/20261009_034658_record/periodicity.png`.
+  - So the "guaranteed 25/30 Hz spike" is real **for this camera**, but only after burst-collapse, and it is **25 fps not 30**. The naive per-packet FFT is dominated by burst-internal structure. Analyzer updated to the burst method + standard-fps matcher (15/20/24/25/30).
+  - Value: a human, a download or browsing has no tight 25/30 fps burst cadence. This is a camera-specific feature that corroborates the uplink + large-packet + steadiness signature. Novel DSP content for the defense.
+- **Closed-app run (03:49):** camera dropped to 0.5 kB/s / 80 frames. It did **not** stand out in the keep-alive table this time (other APs/devices were more regular over 60 s); camera 2's keep-alive is less periodic than camera 1's 15 s beat. **Keep-alive detection is camera-dependent and needs a longer window; it is supporting evidence, not a reliable idle detector.**
+- Measured Wi-Fi feature set now: uplink ratio, duty, steadiness (CV 5 s), large-packet fraction, frame-clock fps. All on hardware, two cameras.
+- **Next:** optical bring-up test (the primary detector).
+
+## 2026-10-09 (03:38) — New firmware verified: packet-size feature works; focus-capture bug found & fixed
+- Reflashed sniffer. 60 s `record` with camera 2 (`cc:b8:…`) streaming (camera 1 idle this session).
+- **Packet-size shape (1.3) — strong measured result:** the camera's uplink is **83 % max-size (≥1200 B) packets**; every non-camera client was **100 % tiny** (phone `72:3b`, idle `b2:db`), and the AP relay was mostly mid-size. Clean separation. Refined the rule to **large-packet fraction ≥ 0.5** (the "tiny ACK" half of the textbook bimodal pattern comes from the AP, not the camera's own tx, so pure bimodality does not apply to a one-sided uplink capture).
+- **Streaming signature** confirmed on the new data: camera ratio 0.96, duty 1.00, CV 0.08 → STREAMER; no false flags.
+- **Bug: 0 `P` (per-packet) lines captured.** The firmware emitted them (focus command acked), but `e2_capture.py` dropped them — its line filter allowed only `I/A/B/M` prefixes, not `P`. **Fixed** (`IABM`→`IABMP`). This run's periodicity data is lost; the fix makes the next focus run work. Firmware unchanged.
+- **Next:** re-run `record --focus cc:b8:5e:ad:5c:4a` (camera streaming) with the fixed tool to capture the per-packet data for the 1.2 periodicity test; then optical bring-up.
+
 ## 2026-10-09 (methods decision) — Wi-Fi method expanded to a feature set; taxonomy recorded
 - Reviewed a full taxonomy of Wi-Fi/RF detection methods (see `docs/analysis/wifi_methods_taxonomy.md`). Decided what to implement vs defer vs exclude, grounded in our E2 measurements. No new hardware needed for any of it.
 - **Implemented now (all passive, ESP32-S3):**

@@ -21,3 +21,4 @@ docs/reference/TZ_v1_draft_defended.md
 build.failed/
 firmware/*/sdkconfig
 firmware/*/dependencies.lock
+/docs/analysis/wifi_methods_taxonomy.md

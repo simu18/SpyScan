@@ -143,7 +143,10 @@ def packet_size_shape(b: pd.DataFrame) -> pd.DataFrame:
     tot = g.sum(axis=1).replace(0, np.nan)
     out = pd.DataFrame({"tiny": g.h0 / tot, "small": g.h1 / tot, "mid": g.h2 / tot, "large": g.h3 / tot})
     out["frames"] = g.sum(axis=1)
-    out["bimodal"] = (out.tiny + out.large >= 0.80) & (out.mid <= 0.10) & (out.frames >= 200)
+    # Measured 2026-10-09 (two cameras): a streaming camera's OWN uplink is dominated by
+    # max-size (>=1200 B) packets; the tiny ACKs come from the AP, not the camera. Idle
+    # phones/plugs send only tiny packets. So the discriminator is the large-packet fraction.
+    out["video_like"] = (out.large >= 0.50) & (out.frames >= 200)
     return out[out.frames >= 50].sort_values("frames", ascending=False)
 
 
@@ -177,48 +180,56 @@ def keepalive_periodicity(b: pd.DataFrame, max_up_kBps: float = 1.0,
         if rows else pd.DataFrame()
 
 
-def focus_periodicity_md(pk: pd.DataFrame, run) -> str:
-    """ACF + FFT of the focused device's per-packet byte rate, 10 ms bins (Method 1.2)."""
-    t = pk.t_ms.values.astype(float)
-    t -= t.min()
-    n = int(t.max() // 10) + 1
-    if n < 64:
+def focus_periodicity_md(pk: pd.DataFrame, run, burst_gap_ms: float = 8.0) -> str:
+    """Frame-clock fingerprint of the focused device (Method 1.2).
+
+    A video frame leaves the MAC as a short BURST of back-to-back packets (fragments of
+    one encoded frame), so individual packet inter-arrivals are dominated by <2 ms
+    within-burst gaps. We first collapse packets into bursts (new burst when the gap
+    exceeds burst_gap_ms), then the inter-BURST interval reveals the frame cadence.
+    Measured 2026-10-09: camera 2 → 40/80 ms (25 fps) clearly; verified against the IAT
+    histogram. The '30 Hz spike' often quoted is camera-specific and only visible after
+    this burst collapse — raw per-packet FFT is dominated by the within-burst structure.
+    """
+    t = np.sort(pk.t_ms.values.astype(float))
+    t -= t[0]
+    span = t[-1] / 1000.0
+    if len(t) < 100 or span < 5:
         return ""
-    x = np.zeros(n)
-    idx = (t // 10).astype(int)
-    np.add.at(x, idx, pk["len"].values.astype(float))   # bytes per 10 ms  (fs = 100 Hz)
-    x -= x.mean()
-    ac = np.correlate(x, x, "full")[n - 1:]
-    ac = ac / ac[0] if ac[0] > 0 else ac
-    lags = np.arange(n) * 0.01
-    sel = (lags >= 0.02) & (lags <= 5.0)              # 0.2 Hz .. 50 Hz
-    i = np.argmax(ac[sel]); L = lags[sel][i]; pac = ac[sel][i]
-    P = np.abs(np.fft.rfft(x)) ** 2
-    f = np.fft.rfftfreq(n, 0.01)
-    band = (f >= 0.2) & (f <= 50)
-    k = np.argmax(P * band); f0 = f[k]
-    md = ("\n## Focused-device packet periodicity (Method 1.2)\n\n"
-          f"- packets captured: {len(pk)}\n"
-          f"- strongest autocorrelation peak: **{pac:+.2f} at {L:.2f} s** (= {1/L:.2f} Hz)\n"
-          f"- strongest spectral line: **{f0:.2f} Hz** (period {1/f0:.3f} s)\n\n"
-          "*A sharp line at 25/30 Hz would be the image-sensor frame clock; a slower line "
-          "is the encoder keyframe (GOP) interval. Interpret with the plot.*\n")
+    starts = t[np.concatenate(([True], np.diff(t) > burst_gap_ms))]
+    ibi = np.diff(starts)                                   # inter-burst intervals, ms
+    ibi = ibi[(ibi > 5) & (ibi < 500)]
+    if len(ibi) < 20:
+        return ""
+    # Which standard frame rate best explains the inter-burst intervals?
+    FPS = {15: 66.7, 20: 50.0, 24: 41.7, 25: 40.0, 30: 33.3}
+    best, best_frac = None, 0.0
+    for fps, per in FPS.items():
+        frac = float(((ibi > per - 4) & (ibi < per + 4)).mean())      # ±4 ms of 1 or 2 periods
+        frac += float(((ibi > 2 * per - 6) & (ibi < 2 * per + 6)).mean())
+        if frac > best_frac:
+            best_frac, best = frac, fps
+    med = float(np.median(ibi))
+    md = ("\n## Focused-device frame-clock fingerprint (Method 1.2)\n\n"
+          f"- packets: {len(t)} in {span:.0f} s → {len(starts)} bursts ({len(starts)/span:.1f}/s)\n"
+          f"- median inter-burst interval: **{med:.0f} ms**\n"
+          f"- best-matching frame rate: **{best} fps** "
+          f"({best_frac:.0%} of intervals within ±4 ms of 1× or 2× the period)\n\n"
+          "*A human, a download or browsing has no tight 25/30 fps burst cadence; a camera does. "
+          "Combine with uplink-dominant + large-packet to corroborate.*\n")
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        fig, ax = plt.subplots(2, 1, figsize=(8, 5))
-        ax[0].plot(lags[sel], ac[sel], lw=1, color="#1f5fa8")
-        ax[0].axvline(L, color="#e8a33d", lw=1); ax[0].set_xlabel("lag, s"); ax[0].set_ylabel("ACF")
-        ax[0].set_title(f"autocorrelation (peak {1/L:.2f} Hz)", fontsize=9)
-        ax[1].plot(f[band], P[band], lw=1, color="#1f5fa8")
-        ax[1].axvline(f0, color="#e8a33d", lw=1)
-        for hz in (25, 30):
-            ax[1].axvline(hz, color="#bbb", ls=":", lw=1)
-        ax[1].set_xlabel("frequency, Hz"); ax[1].set_ylabel("power")
-        ax[1].set_title("spectrum (dotted = 25/30 Hz frame-clock)", fontsize=9)
-        for a in ax:
-            a.spines[["top", "right"]].set_visible(False)
+        fig, ax = plt.subplots(figsize=(7, 3))
+        ax.hist(ibi, bins=np.arange(0, 160, 3), color="#1f5fa8")
+        for fps, per in FPS.items():
+            ax.axvline(per, color="#e8a33d" if fps == best else "#ccc",
+                       ls="--" if fps == best else ":", lw=1)
+            ax.text(per, ax.get_ylim()[1] * 0.9, f"{fps}", fontsize=7, color="#666", ha="center")
+        ax.set_xlabel("inter-burst interval, ms"); ax.set_ylabel("count")
+        ax.set_title(f"frame-clock fingerprint → {best} fps", fontsize=9)
+        ax.spines[["top", "right"]].set_visible(False)
         fig.tight_layout(); fig.savefig(pathlib.Path(run) / "periodicity.png", dpi=130); plt.close(fig)
     except ImportError:
         pass
@@ -339,12 +350,12 @@ def analyse(run, lag_ms: int = 0, top: int = 6):
     shape = packet_size_shape(b)
     if not shape.empty and shape[["tiny", "mid", "large"]].to_numpy().sum() > 0:
         md.write("\n## Packet-size shape of the uplink (Method 1.3)\n\n"
-                 "| MAC | <100 B | 100–699 | 700–1199 | ≥1200 B | bimodal? |\n|---|---|---|---|---|---|\n")
+                 "| MAC | <100 B | 100–699 | 700–1199 | ≥1200 B | video-like? |\n|---|---|---|---|---|---|\n")
         for mac, r in shape.head(8).iterrows():
             md.write(f"| `{mac}` | {r.tiny:.0%} | {r.small:.0%} | {r.mid:.0%} | {r.large:.0%} | "
-                     f"{'yes' if r.bimodal else '-'} |\n")
-        md.write("\n*Video fragments into max-size packets + tiny ACKs → tiny and large bins dominate, "
-                 "middle bins near zero (bimodal). Provisional: tiny+large ≥ 0.8 and mid ≤ 0.1.*\n")
+                     f"{'YES' if r.video_like else '-'} |\n")
+        md.write("\n*A streaming camera's own uplink is dominated by max-size (≥1200 B) packets; "
+                 "idle phones/plugs send only tiny packets. Provisional: large fraction ≥ 0.5.*\n")
 
     # ---- Method 3.2: keep-alive periodicity of quiet devices (presence of an idle camera) ----
     ka = keepalive_periodicity(b)

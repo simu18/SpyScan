@@ -65,7 +65,7 @@ class Device:
             now = time.time()
             for raw in lines:
                 s = raw.decode("utf-8", "replace").strip()
-                if not s or s[0] not in "IABM" or s[1:2] != ",":
+                if not s or s[0] not in "IABMP" or s[1:2] != ",":
                     continue                       # skip boot noise / garbage
                 esc = s.replace('"', '""')
                 self.f.write(f'{now:.3f},"{esc}"\n')
