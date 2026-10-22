@@ -35,6 +35,7 @@
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_ili9341.h"
+#include <fcntl.h>
 #include "esp_camera.h"
 #include "board_pins.h"
 
@@ -44,6 +45,12 @@ static const char *TAG = "bringup";
 #define H 240
 #define STRIP_LINES 40
 #define K_SIGMA 6.0f            /* provisional, see E1 */
+
+typedef enum {
+    OPMODE_LIVE = 0,         /* Live color preview */
+    OPMODE_DIFF = 1,         /* Active optical retroreflection (green reticle [ + ]) */
+    OPMODE_IR_HUNTER = 2     /* Passive Infrared Night-Vision Emitter Detector (purple reticle) */
+} opmode_t;
 
 static esp_lcd_panel_handle_t s_panel = NULL;
 static SemaphoreHandle_t s_lcd_done;
@@ -153,17 +160,19 @@ static esp_err_t cam_init(void)
     return ESP_OK;
 }
 
-static void cam_auto(bool on, int aec)
+static void cam_auto(bool on, int aec, int gain_override)
 {
     sensor_t *s = esp_camera_sensor_get();
+    if (!s) return;
     s->set_exposure_ctrl(s, on);
     s->set_gain_ctrl(s, on);
     s->set_whitebal(s, on);
     s->set_awb_gain(s, on);
     if (!on) {
         s->set_aec2(s, 0);
-        s->set_aec_value(s, aec);      /* 0..1200 on OV2640 */
-        s->set_agc_gain(s, 0);         /* minimum analogue gain -> lowest noise */
+        s->set_aec_value(s, aec);      /* 0..1200 */
+        int gain = (gain_override > 0) ? gain_override : ((s->id.PID == OV3660_PID) ? 4 : 2);
+        s->set_agc_gain(s, gain);
     }
 }
 
@@ -216,6 +225,20 @@ static void emit_small(int aec, char led, float thr, int px, int py)
 {
     b64_encode(s_small, DSW * DSH, s_b64);
     printf("F,%d,%c,%d,%d,%.1f,%d,%d,%s\n", aec, led, DSW, DSH, thr, px, py, s_b64);
+}
+
+/* Draws a green targeting box around the detected lens */
+static void draw_reticle(uint8_t *img, int cx, int cy, uint16_t color_rgb565)
+{
+    uint8_t hi = color_rgb565 >> 8;
+    uint8_t lo = color_rgb565 & 0xFF;
+    int b = 10;
+    for (int k = -b; k <= b; ++k) {
+        if (cy - b >= 0 && cx + k >= 0 && cx + k < W) { img[2 * ((cy - b) * W + (cx + k))] = hi; img[2 * ((cy - b) * W + (cx + k)) + 1] = lo; }
+        if (cy + b < H  && cx + k >= 0 && cx + k < W) { img[2 * ((cy + b) * W + (cx + k))] = hi; img[2 * ((cy + b) * W + (cx + k)) + 1] = lo; }
+        if (cx - b >= 0 && cy + k >= 0 && cy + k < H) { img[2 * ((cy + k) * W + (cx - b))] = hi; img[2 * ((cy + k) * W + (cx - b)) + 1] = lo; }
+        if (cx + b < W  && cy + k >= 0 && cy + k < H) { img[2 * ((cy + k) * W + (cx + b))] = hi; img[2 * ((cy + k) * W + (cx + b)) + 1] = lo; }
+    }
 }
 
 /* -------------------------------------------------------------- Buttons */
@@ -290,6 +313,19 @@ void app_main(void)
     gpio_config_t in = { .pin_bit_mask = (1ULL << PIN_BTN_UP) | (1ULL << PIN_BTN_SEL) | (1ULL << PIN_BTN_BACK),
                          .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE };
     gpio_config(&in);
+
+#ifdef PIN_IR_RX
+    if (PIN_IR_RX >= 0) {
+        gpio_config_t ir_in = {
+            .pin_bit_mask = 1ULL << PIN_IR_RX,
+            .mode = GPIO_MODE_INPUT,
+            .pull_up_en = GPIO_PULLUP_ENABLE,
+        };
+        gpio_config(&ir_in);
+        printf("I,%lu,ir_rx,GPIO%d ready for 5V IR module\n", (unsigned long)now_ms(), PIN_IR_RX);
+    }
+#endif
+
     leds_blink();
     printf("I,%lu,leds,blinked AXIS(GPIO%d) and OFF(GPIO%d) 3x\n", (unsigned long)now_ms(), PIN_LED_AXIS, PIN_LED_OFF);
 
@@ -310,21 +346,25 @@ void app_main(void)
         for (;;) { buttons_poll(); vTaskDelay(pdMS_TO_TICKS(10)); }
     }
 
-    uint8_t  *diff_img = heap_caps_malloc(W * H * 2, MALLOC_CAP_SPIRAM);
-    int16_t  *on_sum   = heap_caps_malloc(W * H * sizeof(int16_t), MALLOC_CAP_SPIRAM);
-    int16_t  *off_sum  = heap_caps_malloc(W * H * sizeof(int16_t), MALLOC_CAP_SPIRAM);
-    configASSERT(diff_img && on_sum && off_sum);
+    fcntl(fileno(stdin), F_SETFL, O_NONBLOCK);
 
-    static const int AEC[] = { 50, 150, 300, 600, 1200 };
-    const int N_AEC = 5;
-    const int CYCLES_PER_SEG = 3;      /* diff cycles per (aec, led) segment */
-    const int N_AVG = 8;               /* frames averaged per LED state (noise down ~sqrt(N)) */
+    uint8_t *diff_img = heap_caps_malloc(W * H * 2, MALLOC_CAP_SPIRAM);
+    uint8_t *y_on     = heap_caps_malloc(W * H, MALLOC_CAP_SPIRAM);
+    uint8_t *y_off    = heap_caps_malloc(W * H, MALLOC_CAP_SPIRAM);
+    configASSERT(diff_img && y_on && y_off);
 
-    /* ---- Phase 1: LIVE preview for ~6 s (camera + LCD sanity) ---- */
-    cam_auto(true, 0);
-    printf("I,%lu,mode,LIVE (6 s preview)\n", (unsigned long)now_ms());
-    uint32_t frames = 0, t_fps = now_ms(), t_live = now_ms(), t_emit = 0;
-    while (now_ms() - t_live < 6000) {
+    static const int AEC_PRESETS[] = { 300, 600, 900, 1200 };
+    const int N_AEC = 4;
+    int aec_idx = 1;                    /* default AEC = 600 */
+    opmode_t mode = OPMODE_DIFF;        /* default mode */
+    bool use_off_axis = false;
+    uint32_t t_emit = 0;
+
+    /* ---- Phase 1: LIVE preview for 3 s (camera + LCD sanity) ---- */
+    cam_auto(true, 0, 0);
+    printf("I,%lu,mode,LIVE (3 s preview)\n", (unsigned long)now_ms());
+    uint32_t t_live = now_ms();
+    while (now_ms() - t_live < 3000) {
         buttons_poll();
         camera_fb_t *fb = esp_camera_fb_get();
         if (fb) {
@@ -346,101 +386,263 @@ void app_main(void)
                 }
             }
             esp_camera_fb_return(fb);
-            frames++;
-        }
-        if (now_ms() - t_fps > 5000) {
-            printf("I,%lu,live_fps,%.1f\n", (unsigned long)now_ms(), frames * 1000.0 / (now_ms() - t_fps));
-            frames = 0; t_fps = now_ms();
         }
     }
 
-    /* ---- Phase 2: automatic optical sweep (NO buttons needed) ----
-     * Repeats forever. For each exposure it runs AXIS then OFF-AXIS diff cycles,
-     * pulsing the LED (so you can see the LEDs work) and printing one D line per
-     * cycle. Point the board at a lens and hold it still for one full sweep. */
-    printf("I,%lu,mode,DIFF_AUTO - point at a lens; AXIS then OFF-AXIS, exposure 50..1200\n",
-           (unsigned long)now_ms());
-    int sweep = 0;
+    /* ---- Phase 2: Multi-Modal Detection Engine ---- */
+    cam_auto(false, AEC_PRESETS[aec_idx], 0);
+    printf("I,%lu,mode,DIFF_REALTIME,aec=%d,led=%c\n", (unsigned long)now_ms(),
+           AEC_PRESETS[aec_idx], use_off_axis ? 'O' : 'A');
+
     for (;;) {
-        for (int ai = 0; ai < N_AEC; ++ai) {
-            cam_auto(false, AEC[ai]);
-            for (int d = 0; d < 4; ++d) {               /* let the new exposure settle */
-                camera_fb_t *f = esp_camera_fb_get(); if (f) esp_camera_fb_return(f);
+        int btn = buttons_poll();
+        int input = getchar();
+
+        /* Hardware 5V IR Module Interrupt / Polling */
+#ifdef PIN_IR_RX
+        static int s_last_ir_hw = 1;
+        static uint32_t s_ir_hw_debounce = 0;
+        if (PIN_IR_RX >= 0) {
+            int ir_lvl = gpio_get_level(PIN_IR_RX);
+            if (ir_lvl == 0 && s_last_ir_hw == 1 && (now_ms() - s_ir_hw_debounce > 100)) {
+                s_ir_hw_debounce = now_ms();
+                printf("I,%lu,IR_HW_TRIGGER,level=0\n", (unsigned long)now_ms());
             }
-            for (int grp = 0; grp < 2; ++grp) {
-                bool use_off_axis = (grp == 1);
-                int led = use_off_axis ? PIN_LED_OFF : PIN_LED_AXIS;
-                printf("M,%lu,seg,sweep=%d,aec=%d,led=%c\n", (unsigned long)now_ms(),
-                       sweep, AEC[ai], use_off_axis ? 'O' : 'A');
-                for (int c = 0; c < CYCLES_PER_SEG; ++c) {
-                    buttons_poll();
-                    memset(on_sum, 0, W * H * sizeof(int16_t));
-                    memset(off_sum, 0, W * H * sizeof(int16_t));
+            s_last_ir_hw = ir_lvl;
+        }
+#endif
 
-                    /* ---- average N_AVG frames with the LED ON ---- */
-                    gpio_set_level(led, 1);
-                    { camera_fb_t *f = grab_fresh(2); if (f) esp_camera_fb_return(f); }  /* settle */
-                    for (int n = 0; n < N_AVG; ++n) {
-                        camera_fb_t *fb = esp_camera_fb_get();
-                        if (!fb) continue;
-                        for (int i = 0; i < W * H; ++i) on_sum[i] += lum(fb->buf + 2 * i);
-                        esp_camera_fb_return(fb);
-                    }
-                    /* ---- average N_AVG frames with the LED OFF ---- */
-                    gpio_set_level(led, 0);
-                    { camera_fb_t *f = grab_fresh(2); if (f) esp_camera_fb_return(f); }  /* settle */
-                    for (int n = 0; n < N_AVG; ++n) {
-                        camera_fb_t *fb = esp_camera_fb_get();
-                        if (!fb) continue;
-                        for (int i = 0; i < W * H; ++i) off_sum[i] += lum(fb->buf + 2 * i);
-                        esp_camera_fb_return(fb);
-                    }
-
-                    /* ---- signed diff of the averages: d = (on - off)/N_AVG ----
-                     * No clamp, so the noise floor is zero-mean and sigma is the
-                     * true per-pixel noise. A retroreflecting lens is a positive outlier. */
-                    double sum = 0, sum2 = 0;
-                    float peak = -1e9f; int px = 0, py = 0;
-                    for (int i = 0; i < W * H; ++i) {
-                        float d = (on_sum[i] - off_sum[i]) / (float)N_AVG;
-                        sum += d; sum2 += (double)d * d;
-                        if (d > peak) { peak = d; px = i % W; py = i / W; }
-                    }
-                    float mean = (float)(sum / (W * H));
-                    float sigma = sqrtf(fmaxf((float)(sum2 / (W * H)) - mean * mean, 1e-3f));
-                    float thr = mean + K_SIGMA * sigma;
-                    int hot = 0;
-                    for (int i = 0; i < W * H; ++i) {
-                        float d = (on_sum[i] - off_sum[i]) / (float)N_AVG;
-                        uint16_t cc;
-                        if (d > thr) { cc = 0xF800; hot++; }         /* red = positive outlier */
-                        else { int g = (int)(d * 8.0f); if (g < 0) g = 0; if (g > 255) g = 255;
-                               cc = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3)); }
-                        diff_img[2 * i] = cc >> 8; diff_img[2 * i + 1] = cc & 0xFF;
-                    }
-                    lcd_draw_be(diff_img);
-                    /* stream the diff (max-pooled 80x60) to the laptop viewer */
-                    for (int by = 0; by < DSH; ++by)
-                        for (int bx = 0; bx < DSW; ++bx) {
-                            int mx = 0;
-                            for (int yy = 0; yy < DSBY; ++yy)
-                                for (int xx = 0; xx < DSBX; ++xx) {
-                                    int i = (by * DSBY + yy) * W + (bx * DSBX + xx);
-                                    int d = (int)((on_sum[i] - off_sum[i]) / (float)N_AVG);
-                                    if (d < 0) d = 0;
-                                    if (d > 255) d = 255;
-                                    if (d > mx) mx = d;
-                                }
-                            s_small[by * DSW + bx] = (uint8_t)mx;
-                        }
-                    emit_small(AEC[ai], use_off_axis ? 'O' : 'A', thr, px, py);
-                    printf("D,%lu,%c,%d,%.2f,%.2f,%.1f,%d,%.0f,%d,%d,%.1f\n", (unsigned long)now_ms(),
-                           use_off_axis ? 'O' : 'A', AEC[ai], mean, sigma, thr, hot, peak, px, py,
-                           (peak - mean) / sigma);
-                }
-                gpio_set_level(led, 0);
+        /* Serial keyboard shortcuts or physical buttons */
+        if (input == '1' || input == 'l') {
+            mode = OPMODE_LIVE;
+            cam_auto(true, 0, 0);
+            printf("I,%lu,mode,LIVE\n", (unsigned long)now_ms());
+        } else if (input == '2' || input == 'd') {
+            mode = OPMODE_DIFF;
+            cam_auto(false, AEC_PRESETS[aec_idx], 0);
+            printf("I,%lu,mode,DIFF_REALTIME,aec=%d\n", (unsigned long)now_ms(), AEC_PRESETS[aec_idx]);
+        } else if (input == '3' || input == 'i') {
+            mode = OPMODE_IR_HUNTER;
+            cam_auto(false, 900, 7);
+            printf("I,%lu,mode,IR_HUNTER (Passive Night-Vision Hunter)\n", (unsigned long)now_ms());
+        } else if (input == 'm' || input == ' ' || (btn & 2)) {
+            /* Cycle modes: LIVE -> DIFF -> IR_HUNTER */
+            mode = (mode + 1) % 3;
+            if (mode == OPMODE_LIVE) {
+                cam_auto(true, 0, 0);
+                printf("I,%lu,mode,LIVE\n", (unsigned long)now_ms());
+            } else if (mode == OPMODE_DIFF) {
+                cam_auto(false, AEC_PRESETS[aec_idx], 0);
+                printf("I,%lu,mode,DIFF_REALTIME\n", (unsigned long)now_ms());
+            } else {
+                cam_auto(false, 900, 7);
+                printf("I,%lu,mode,IR_HUNTER\n", (unsigned long)now_ms());
             }
         }
-        sweep++;
+
+        if (input == 'a') { use_off_axis = false; printf("I,%lu,led,AXIS\n", (unsigned long)now_ms()); }
+        if (input == 'o' || (btn & 4)) {
+            use_off_axis = !use_off_axis;
+            printf("I,%lu,led,%s\n", (unsigned long)now_ms(), use_off_axis ? "OFF_AXIS" : "AXIS");
+        }
+        if (input == '+' || (btn & 1)) {
+            aec_idx = (aec_idx + 1) % N_AEC;
+            if (mode == OPMODE_DIFF) cam_auto(false, AEC_PRESETS[aec_idx], 0);
+            printf("I,%lu,aec,%d\n", (unsigned long)now_ms(), AEC_PRESETS[aec_idx]);
+        }
+        if (input == '-') {
+            aec_idx = (aec_idx - 1 + N_AEC) % N_AEC;
+            if (mode == OPMODE_DIFF) cam_auto(false, AEC_PRESETS[aec_idx], 0);
+            printf("I,%lu,aec,%d\n", (unsigned long)now_ms(), AEC_PRESETS[aec_idx]);
+        }
+        if (input == 's') {
+            printf("I,%lu,status,mode=%d,aec=%d,led=%c\n", (unsigned long)now_ms(),
+                   mode, AEC_PRESETS[aec_idx], use_off_axis ? 'O' : 'A');
+        }
+        if (input == 'h' || input == '?') {
+            printf("I,%lu,cmd_help,1=LIVE,2=DIFF,3=IR_HUNTER,m=cycle,+=aec_up,-=aec_down,a=axis,o=off_axis\n", (unsigned long)now_ms());
+        }
+
+        /* ----------------------------------------------- MODE 1: LIVE VIEW */
+        if (mode == OPMODE_LIVE) {
+            gpio_set_level(PIN_LED_AXIS, 0);
+            gpio_set_level(PIN_LED_OFF, 0);
+            camera_fb_t *fb = esp_camera_fb_get();
+            if (fb) {
+                if (fb->len >= W * H * 2) lcd_draw_be(fb->buf);
+                esp_camera_fb_return(fb);
+            }
+            continue;
+        }
+
+        /* ----------------------------------- MODE 3: PASSIVE IR NIGHT-VISION HUNTER */
+        if (mode == OPMODE_IR_HUNTER) {
+            gpio_set_level(PIN_LED_AXIS, 0);
+            gpio_set_level(PIN_LED_OFF, 0);
+
+            camera_fb_t *fb = esp_camera_fb_get();
+            if (!fb) continue;
+
+            double sum = 0, sum2 = 0;
+            int peak = 0, px = 0, py = 0;
+            for (int i = 0; i < W * H; ++i) {
+                uint8_t v = lum(fb->buf + 2 * i);
+                y_on[i] = v;
+                sum += v;
+                sum2 += (double)v * v;
+                if (v > peak) { peak = v; px = i % W; py = i / W; }
+            }
+            esp_camera_fb_return(fb);
+
+            float mean = (float)(sum / (W * H));
+            float sigma = sqrtf(fmaxf((float)(sum2 / (W * H)) - mean * mean, 1e-3f));
+            float thr = mean + 4.5f * sigma;
+            if (thr < 110.0f) thr = 110.0f;
+
+            int hot = 0;
+            for (int i = 0; i < W * H; ++i) {
+                if (y_on[i] > thr) hot++;
+            }
+
+            float contrast = (float)peak - mean;
+            float snr = contrast / (sigma > 0.1f ? sigma : 1.0f);
+
+            /* Active IR Night-Vision Emitter criterion:
+             * 1) Peak intensity >= 110 DN
+             * 2) Contrast >= 35.0 DN above ambient background
+             * 3) SNR >= 3.8 standard deviations
+             * 4) Compact optical bloom (hot pixel count 1..80 px) */
+            bool is_ir = (peak >= 110 && contrast >= 35.0f && snr >= 3.8f && hot >= 1 && hot <= 80);
+
+            for (int i = 0; i < W * H; ++i) {
+                uint8_t v = y_on[i];
+                uint16_t cc;
+                if (is_ir && v > thr) {
+                    cc = 0xF81F; /* Bright Magenta / Purple for IR */
+                } else {
+                    cc = (uint16_t)(((v >> 3) << 11) | ((v >> 2) << 5) | (v >> 3));
+                }
+                diff_img[2 * i] = cc >> 8;
+                diff_img[2 * i + 1] = cc & 0xFF;
+            }
+
+            if (is_ir) {
+                draw_reticle(diff_img, px, py, 0xF81F); /* Purple targeting reticle */
+                printf("I,%lu,IR_ALERT,peak=%d,loc=(%d,%d),snr=%.1f,hot=%d\n", (unsigned long)now_ms(), peak, px, py, snr, hot);
+            }
+
+            lcd_draw_be(diff_img);
+
+            if (now_ms() - t_emit > 150) {
+                for (int by = 0; by < DSH; ++by)
+                    for (int bx = 0; bx < DSW; ++bx) {
+                        int mx = 0;
+                        for (int yy = 0; yy < DSBY; ++yy)
+                            for (int xx = 0; xx < DSBX; ++xx) {
+                                int i = (by * DSBY + yy) * W + (bx * DSBX + xx);
+                                int v = y_on[i];
+                                if (v > mx) mx = v;
+                            }
+                        s_small[by * DSW + bx] = (uint8_t)mx;
+                    }
+                emit_small(900, 'I', thr, px, py);
+                t_emit = now_ms();
+            }
+
+            printf("D,%lu,I,900,%.2f,%.2f,%.1f,%d,%d,%d,%d,%.1f\n",
+                   (unsigned long)now_ms(), mean, sigma, thr, hot, peak, px, py, snr);
+            continue;
+        }
+
+        /* ----------------------------------- MODE 2: ACTIVE RETROREFLECTION DIFF */
+        int led = use_off_axis ? PIN_LED_OFF : PIN_LED_AXIS;
+
+        /* Step 1: LED ON frame */
+        gpio_set_level(led, 1);
+        { camera_fb_t *f = grab_fresh(1); if (f) esp_camera_fb_return(f); }
+        camera_fb_t *fb_on = esp_camera_fb_get();
+        if (!fb_on) { gpio_set_level(led, 0); continue; }
+        for (int i = 0; i < W * H; ++i) y_on[i] = lum(fb_on->buf + 2 * i);
+        esp_camera_fb_return(fb_on);
+
+        /* Step 2: LED OFF frame */
+        gpio_set_level(led, 0);
+        { camera_fb_t *f = grab_fresh(1); if (f) esp_camera_fb_return(f); }
+        camera_fb_t *fb_off = esp_camera_fb_get();
+        if (!fb_off) continue;
+        for (int i = 0; i < W * H; ++i) y_off[i] = lum(fb_off->buf + 2 * i);
+        esp_camera_fb_return(fb_off);
+
+        /* Step 3: Compute Difference d = max(0, on - off) */
+        double sum = 0, sum2 = 0;
+        int peak = 0, px = 0, py = 0;
+        for (int i = 0; i < W * H; ++i) {
+            int d = (int)y_on[i] - (int)y_off[i];
+            if (d < 0) d = 0;
+            y_on[i] = (uint8_t)d; /* reuse y_on as diff buffer */
+            sum += d;
+            sum2 += (double)d * d;
+            if (d > peak) { peak = d; px = i % W; py = i / W; }
+        }
+
+        float mean = (float)(sum / (W * H));
+        float sigma = sqrtf(fmaxf((float)(sum2 / (W * H)) - mean * mean, 1e-3f));
+        float thr = mean + 4.5f * sigma;
+        if (thr < 12.0f) thr = 12.0f;
+
+        /* Count hot pixels */
+        int hot = 0;
+        for (int i = 0; i < W * H; ++i) {
+            if (y_on[i] > thr) hot++;
+        }
+
+        /* Compact lens return criterion:
+         * 1) Peak contrast >= 20 DN above noise
+         * 2) Hot cluster size <= 25 pixels (rejects wide motion blur & table glints)
+         * 3) Only triggers on AXIS LED (directional optical retroreflection) */
+        bool is_lens = (peak >= 20 && hot >= 1 && hot <= 25 && !use_off_axis);
+
+        /* Render difference image on display */
+        for (int i = 0; i < W * H; ++i) {
+            uint16_t cc;
+            uint8_t d = y_on[i];
+            if (d > thr) {
+                cc = 0xF800; /* Red */
+            } else {
+                int g = (int)(d * 5); /* amplified greyscale */
+                if (g > 255) g = 255;
+                cc = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3));
+            }
+            diff_img[2 * i] = cc >> 8;
+            diff_img[2 * i + 1] = cc & 0xFF;
+        }
+
+        /* If lens detected, draw green targeting reticle box around it */
+        if (is_lens) {
+            draw_reticle(diff_img, px, py, 0x07E0); /* Green crosshair/box */
+        }
+
+        lcd_draw_be(diff_img);
+
+        /* Stream downsampled frame to laptop e1_view.py */
+        if (now_ms() - t_emit > 200) {
+            for (int by = 0; by < DSH; ++by)
+                for (int bx = 0; bx < DSW; ++bx) {
+                    int mx = 0;
+                    for (int yy = 0; yy < DSBY; ++yy)
+                        for (int xx = 0; xx < DSBX; ++xx) {
+                            int i = (by * DSBY + yy) * W + (bx * DSBX + xx);
+                            int d = y_on[i];
+                            if (d > mx) mx = d;
+                        }
+                    s_small[by * DSW + bx] = (uint8_t)mx;
+                }
+            emit_small(AEC_PRESETS[aec_idx], use_off_axis ? 'O' : 'A', thr, px, py);
+            t_emit = now_ms();
+        }
+
+        printf("D,%lu,%c,%d,%.2f,%.2f,%.1f,%d,%d,%d,%d,%.1f\n",
+               (unsigned long)now_ms(), use_off_axis ? 'O' : 'A', AEC_PRESETS[aec_idx],
+               mean, sigma, thr, hot, peak, px, py, (peak - mean) / sigma);
     }
 }

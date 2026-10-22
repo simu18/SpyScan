@@ -82,6 +82,14 @@ class Reader(threading.Thread):
         with self.lock:
             return self.frame
 
+    def send(self, char: str):
+        try:
+            if self.ser and self.ser.is_open:
+                self.ser.write(char.encode("utf-8"))
+                self.ser.flush()
+        except Exception:
+            pass
+
     def close(self):
         self._stop = True
         try: self.ser.close()
@@ -115,7 +123,17 @@ def main():
     ax.set_xticks([]); ax.set_yticks([])
     fig.tight_layout()
 
-    LED_NAME = {"L": "LIVE", "A": "AXIS (on-axis)", "O": "OFF-AXIS"}
+    def on_key(event):
+        if event.key in ["1", "2", "3", "m", "+", "-", "a", "o", "s", "h", "?"]:
+            rd.send(event.key)
+    fig.canvas.mpl_connect("key_press_event", on_key)
+
+    LED_NAME = {
+        "L": "LIVE PREVIEW",
+        "A": "DIFF: ON-AXIS RETROREFLECTION",
+        "O": "DIFF: OFF-AXIS AMBIENT",
+        "I": "PASSIVE IR NIGHT-VISION HUNTER"
+    }
     try:
         while plt.fignum_exists(fig.number):
             fr = rd.get()
@@ -123,17 +141,23 @@ def main():
                 img, m = fr
                 g = img.astype(np.float32)
                 # grayscale base, scaled for visibility
-                base = np.clip(g * (1.0 if m["led"] == "L" else 6.0), 0, 255).astype(np.uint8)
+                scale = 1.0 if m["led"] == "L" else (1.0 if m["led"] == "I" else 6.0)
+                base = np.clip(g * scale, 0, 255).astype(np.uint8)
                 rgb = np.stack([base, base, base], axis=-1)
-                if m["led"] != "L" and m["thr"] > 0:          # red = above-threshold (diff)
+                if m["led"] != "L" and m["thr"] > 0:
                     hot = img > m["thr"]
-                    rgb[hot] = [255, 0, 0]
+                    if m["led"] == "I":
+                        rgb[hot] = [255, 0, 255]      # Magenta for IR
+                    else:
+                        rgb[hot] = [255, 0, 0]        # Red for Retroreflection diff
                 im.set_data(rgb)
+
                 # peak marker (full-res coords -> downsampled grid)
                 bx = m["px"] * m["w"] / 320.0
                 by = m["py"] * m["h"] / 240.0
                 if m["led"] != "L":
                     dot.set_data([bx], [by])
+                    dot.set_markeredgecolor("#ff00ff" if m["led"] == "I" else "#00ffff")
                 else:
                     dot.set_data([], [])
                 tag = LED_NAME.get(m["led"], m["led"])

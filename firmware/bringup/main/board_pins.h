@@ -22,8 +22,9 @@
 #define PIN_BTN_SEL    39
 #define PIN_BTN_BACK   40
 
-/* ---- Analog ---- */
+/* ---- Analog & Sensor Inputs ---- */
 #define PIN_VBAT_SENSE 1
+#define PIN_IR_RX      3      /* optional 5V IR receiver / photodiode input */
 
 /* ---- Camera (ESP32-S3-EYE style mapping) ---- */
 #define PIN_CAM_PWDN   (-1)
