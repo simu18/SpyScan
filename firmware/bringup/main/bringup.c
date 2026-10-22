@@ -4,16 +4,16 @@
  * On boot it checks and prints (serial, USB Serial/JTAG console):
  *   chip / flash / PSRAM size, camera sensor model, camera frame rate,
  *   display, LEDs, buttons.
- * Then it runs two screens:
- *   LIVE  camera preview on the ILI9341 (auto exposure)
- *   DIFF  first lens-retroreflection test: exposure locked, on-axis LED toggled,
- *         D = Y(LED on) - Y(LED off); pixels above mean + K*sigma are marked red.
+ * Then it runs, with NO buttons required:
+ *   LIVE       ~6 s camera preview on the ILI9341 (auto exposure)
+ *   DIFF_AUTO  automatic lens-retroreflection sweep, forever: for each exposure
+ *              (50..1200) it runs AXIS then OFF-AXIS diff cycles, pulsing the LED
+ *              and printing one D line per cycle. D = Y(LED on) - Y(LED off);
+ *              pixels above mean + K*sigma are marked red on the display.
+ *              M lines mark each (sweep, aec, led) segment.
+ * Buttons (optional, if fitted) are still polled and logged but are not needed.
  *
- * Buttons:  SEL  = LIVE <-> DIFF
- *           UP   = (DIFF) next exposure value   (LIVE) blink both LEDs once
- *           BACK = (DIFF) use the OFF-AXIS LED instead of the on-axis LED (H1 preview)
- *
- * Serial lines in DIFF mode (for E1 data collection):
+ * Serial lines in DIFF_AUTO (for E1 data collection):
  *   D,<t_ms>,<led:A|O>,<aec>,<mean>,<sigma>,<thr>,<n_hot>,<peak>,<peak_x>,<peak_y>,<snr>
  * K = 6 is PROVISIONAL — the real threshold comes from E1 data.
  */
@@ -69,7 +69,7 @@ static esp_err_t lcd_init(void)
     esp_lcd_panel_io_spi_config_t io_cfg = {
         .dc_gpio_num = PIN_LCD_DC,
         .cs_gpio_num = PIN_LCD_CS,
-        .pclk_hz = 40 * 1000 * 1000,           /* drop to 20 MHz if the image is corrupted */
+        .pclk_hz = 10 * 1000 * 1000,           /* 10 MHz: safe over breadboard jumpers (was 40 MHz) */
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
         .spi_mode = 0,
@@ -186,6 +186,38 @@ static inline uint8_t lum(const uint8_t *p)
     return (uint8_t)((77 * r + 150 * g + 29 * b) >> 8);
 }
 
+/* ----------------------------------------------- serial frame streaming
+ * Sends a downsampled 80x60 image to the laptop so the physical LCD is
+ * optional. One F line per LIVE frame (throttled) and per DIFF cycle:
+ *   F,<aec>,<led L|A|O>,<w>,<h>,<thr>,<peak_x>,<peak_y>,<base64 of w*h bytes>
+ * The laptop viewer (tools/e1/e1_view.py) decodes and displays it. */
+#define DSW 80
+#define DSH 60
+#define DSBX (W / DSW)              /* 4 */
+#define DSBY (H / DSH)              /* 4 */
+static uint8_t s_small[DSW * DSH];
+static char    s_b64[DSW * DSH * 4 / 3 + 8];
+
+static const char B64TAB[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static void b64_encode(const uint8_t *in, int n, char *out)
+{
+    int o = 0;
+    for (int i = 0; i < n; i += 3) {
+        int b0 = in[i], b1 = (i + 1 < n) ? in[i + 1] : 0, b2 = (i + 2 < n) ? in[i + 2] : 0;
+        out[o++] = B64TAB[b0 >> 2];
+        out[o++] = B64TAB[((b0 & 3) << 4) | (b1 >> 4)];
+        out[o++] = (i + 1 < n) ? B64TAB[((b1 & 15) << 2) | (b2 >> 6)] : '=';
+        out[o++] = (i + 2 < n) ? B64TAB[b2 & 63] : '=';
+    }
+    out[o] = 0;
+}
+static void emit_small(int aec, char led, float thr, int px, int py)
+{
+    b64_encode(s_small, DSW * DSH, s_b64);
+    printf("F,%d,%c,%d,%d,%.1f,%d,%d,%s\n", aec, led, DSW, DSH, thr, px, py, s_b64);
+}
+
 /* -------------------------------------------------------------- Buttons */
 typedef struct { int pin; int stable, last; uint32_t t; } btn_t;
 static btn_t s_btn[3] = { { PIN_BTN_UP, 1, 1, 0 }, { PIN_BTN_SEL, 1, 1, 0 }, { PIN_BTN_BACK, 1, 1, 0 } };
@@ -278,83 +310,137 @@ void app_main(void)
         for (;;) { buttons_poll(); vTaskDelay(pdMS_TO_TICKS(10)); }
     }
 
-    uint8_t *diff_img = heap_caps_malloc(W * H * 2, MALLOC_CAP_SPIRAM);
-    uint8_t *y_on = heap_caps_malloc(W * H, MALLOC_CAP_SPIRAM);
-    configASSERT(diff_img && y_on);
+    uint8_t  *diff_img = heap_caps_malloc(W * H * 2, MALLOC_CAP_SPIRAM);
+    int16_t  *on_sum   = heap_caps_malloc(W * H * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    int16_t  *off_sum  = heap_caps_malloc(W * H * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    configASSERT(diff_img && on_sum && off_sum);
 
     static const int AEC[] = { 50, 150, 300, 600, 1200 };
-    int aec_i = 1;
-    bool diff_mode = false, use_off_axis = false;
-    uint32_t frames = 0, t_fps = now_ms();
+    const int N_AEC = 5;
+    const int CYCLES_PER_SEG = 3;      /* diff cycles per (aec, led) segment */
+    const int N_AVG = 8;               /* frames averaged per LED state (noise down ~sqrt(N)) */
 
+    /* ---- Phase 1: LIVE preview for ~6 s (camera + LCD sanity) ---- */
+    cam_auto(true, 0);
+    printf("I,%lu,mode,LIVE (6 s preview)\n", (unsigned long)now_ms());
+    uint32_t frames = 0, t_fps = now_ms(), t_live = now_ms(), t_emit = 0;
+    while (now_ms() - t_live < 6000) {
+        buttons_poll();
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (fb) {
+            if (fb->len >= W * H * 2) {
+                lcd_draw_be(fb->buf);
+                if (now_ms() - t_emit > 300) {          /* stream luma to laptop */
+                    for (int by = 0; by < DSH; ++by)
+                        for (int bx = 0; bx < DSW; ++bx) {
+                            int mx = 0;
+                            for (int yy = 0; yy < DSBY; ++yy)
+                                for (int xx = 0; xx < DSBX; ++xx) {
+                                    int v = lum(fb->buf + 2 * ((by * DSBY + yy) * W + (bx * DSBX + xx)));
+                                    if (v > mx) mx = v;
+                                }
+                            s_small[by * DSW + bx] = (uint8_t)mx;
+                        }
+                    emit_small(0, 'L', 0, 0, 0);
+                    t_emit = now_ms();
+                }
+            }
+            esp_camera_fb_return(fb);
+            frames++;
+        }
+        if (now_ms() - t_fps > 5000) {
+            printf("I,%lu,live_fps,%.1f\n", (unsigned long)now_ms(), frames * 1000.0 / (now_ms() - t_fps));
+            frames = 0; t_fps = now_ms();
+        }
+    }
+
+    /* ---- Phase 2: automatic optical sweep (NO buttons needed) ----
+     * Repeats forever. For each exposure it runs AXIS then OFF-AXIS diff cycles,
+     * pulsing the LED (so you can see the LEDs work) and printing one D line per
+     * cycle. Point the board at a lens and hold it still for one full sweep. */
+    printf("I,%lu,mode,DIFF_AUTO - point at a lens; AXIS then OFF-AXIS, exposure 50..1200\n",
+           (unsigned long)now_ms());
+    int sweep = 0;
     for (;;) {
-        int ev = buttons_poll();
-        if (ev & 2) {                                   /* SEL: switch mode */
-            diff_mode = !diff_mode;
-            cam_auto(!diff_mode, AEC[aec_i]);
-            printf("I,%lu,mode,%s\n", (unsigned long)now_ms(), diff_mode ? "DIFF" : "LIVE");
-        }
-        if (ev & 1) {
-            if (diff_mode) { aec_i = (aec_i + 1) % 5; cam_auto(false, AEC[aec_i]);
-                             printf("I,%lu,aec,%d\n", (unsigned long)now_ms(), AEC[aec_i]); }
-            else leds_blink();
-        }
-        if ((ev & 4) && diff_mode) {
-            use_off_axis = !use_off_axis;
-            printf("I,%lu,led_group,%s\n", (unsigned long)now_ms(), use_off_axis ? "OFF_AXIS" : "AXIS");
-        }
-
-        if (!diff_mode) {                               /* ---------- LIVE */
-            camera_fb_t *fb = esp_camera_fb_get();
-            if (fb) {
-                if (fb->len >= W * H * 2) lcd_draw_be(fb->buf);
-                esp_camera_fb_return(fb);
-                frames++;
+        for (int ai = 0; ai < N_AEC; ++ai) {
+            cam_auto(false, AEC[ai]);
+            for (int d = 0; d < 4; ++d) {               /* let the new exposure settle */
+                camera_fb_t *f = esp_camera_fb_get(); if (f) esp_camera_fb_return(f);
             }
-            if (now_ms() - t_fps > 5000) {
-                printf("I,%lu,live_fps,%.1f\n", (unsigned long)now_ms(), frames * 1000.0 / (now_ms() - t_fps));
-                frames = 0; t_fps = now_ms();
+            for (int grp = 0; grp < 2; ++grp) {
+                bool use_off_axis = (grp == 1);
+                int led = use_off_axis ? PIN_LED_OFF : PIN_LED_AXIS;
+                printf("M,%lu,seg,sweep=%d,aec=%d,led=%c\n", (unsigned long)now_ms(),
+                       sweep, AEC[ai], use_off_axis ? 'O' : 'A');
+                for (int c = 0; c < CYCLES_PER_SEG; ++c) {
+                    buttons_poll();
+                    memset(on_sum, 0, W * H * sizeof(int16_t));
+                    memset(off_sum, 0, W * H * sizeof(int16_t));
+
+                    /* ---- average N_AVG frames with the LED ON ---- */
+                    gpio_set_level(led, 1);
+                    { camera_fb_t *f = grab_fresh(2); if (f) esp_camera_fb_return(f); }  /* settle */
+                    for (int n = 0; n < N_AVG; ++n) {
+                        camera_fb_t *fb = esp_camera_fb_get();
+                        if (!fb) continue;
+                        for (int i = 0; i < W * H; ++i) on_sum[i] += lum(fb->buf + 2 * i);
+                        esp_camera_fb_return(fb);
+                    }
+                    /* ---- average N_AVG frames with the LED OFF ---- */
+                    gpio_set_level(led, 0);
+                    { camera_fb_t *f = grab_fresh(2); if (f) esp_camera_fb_return(f); }  /* settle */
+                    for (int n = 0; n < N_AVG; ++n) {
+                        camera_fb_t *fb = esp_camera_fb_get();
+                        if (!fb) continue;
+                        for (int i = 0; i < W * H; ++i) off_sum[i] += lum(fb->buf + 2 * i);
+                        esp_camera_fb_return(fb);
+                    }
+
+                    /* ---- signed diff of the averages: d = (on - off)/N_AVG ----
+                     * No clamp, so the noise floor is zero-mean and sigma is the
+                     * true per-pixel noise. A retroreflecting lens is a positive outlier. */
+                    double sum = 0, sum2 = 0;
+                    float peak = -1e9f; int px = 0, py = 0;
+                    for (int i = 0; i < W * H; ++i) {
+                        float d = (on_sum[i] - off_sum[i]) / (float)N_AVG;
+                        sum += d; sum2 += (double)d * d;
+                        if (d > peak) { peak = d; px = i % W; py = i / W; }
+                    }
+                    float mean = (float)(sum / (W * H));
+                    float sigma = sqrtf(fmaxf((float)(sum2 / (W * H)) - mean * mean, 1e-3f));
+                    float thr = mean + K_SIGMA * sigma;
+                    int hot = 0;
+                    for (int i = 0; i < W * H; ++i) {
+                        float d = (on_sum[i] - off_sum[i]) / (float)N_AVG;
+                        uint16_t cc;
+                        if (d > thr) { cc = 0xF800; hot++; }         /* red = positive outlier */
+                        else { int g = (int)(d * 8.0f); if (g < 0) g = 0; if (g > 255) g = 255;
+                               cc = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3)); }
+                        diff_img[2 * i] = cc >> 8; diff_img[2 * i + 1] = cc & 0xFF;
+                    }
+                    lcd_draw_be(diff_img);
+                    /* stream the diff (max-pooled 80x60) to the laptop viewer */
+                    for (int by = 0; by < DSH; ++by)
+                        for (int bx = 0; bx < DSW; ++bx) {
+                            int mx = 0;
+                            for (int yy = 0; yy < DSBY; ++yy)
+                                for (int xx = 0; xx < DSBX; ++xx) {
+                                    int i = (by * DSBY + yy) * W + (bx * DSBX + xx);
+                                    int d = (int)((on_sum[i] - off_sum[i]) / (float)N_AVG);
+                                    if (d < 0) d = 0;
+                                    if (d > 255) d = 255;
+                                    if (d > mx) mx = d;
+                                }
+                            s_small[by * DSW + bx] = (uint8_t)mx;
+                        }
+                    emit_small(AEC[ai], use_off_axis ? 'O' : 'A', thr, px, py);
+                    printf("D,%lu,%c,%d,%.2f,%.2f,%.1f,%d,%.0f,%d,%d,%.1f\n", (unsigned long)now_ms(),
+                           use_off_axis ? 'O' : 'A', AEC[ai], mean, sigma, thr, hot, peak, px, py,
+                           (peak - mean) / sigma);
+                }
+                gpio_set_level(led, 0);
             }
-            continue;
         }
-
-        /* ---------------------------------------------------------- DIFF */
-        int led = use_off_axis ? PIN_LED_OFF : PIN_LED_AXIS;
-        gpio_set_level(led, 1);
-        camera_fb_t *fb = grab_fresh(2);
-        if (!fb) continue;
-        for (int i = 0; i < W * H; ++i) y_on[i] = lum(fb->buf + 2 * i);
-        esp_camera_fb_return(fb);
-
-        gpio_set_level(led, 0);
-        fb = grab_fresh(2);
-        if (!fb) continue;
-
-        /* D = max(0, on - off); statistics over the whole frame */
-        double sum = 0, sum2 = 0;
-        int peak = 0, px = 0, py = 0;
-        for (int i = 0; i < W * H; ++i) {
-            int d = (int)y_on[i] - (int)lum(fb->buf + 2 * i);
-            if (d < 0) d = 0;
-            y_on[i] = (uint8_t)d;                       /* reuse buffer for D */
-            sum += d; sum2 += (double)d * d;
-            if (d > peak) { peak = d; px = i % W; py = i / W; }
-        }
-        esp_camera_fb_return(fb);
-        float mean = (float)(sum / (W * H));
-        float sigma = sqrtf(fmaxf((float)(sum2 / (W * H)) - mean * mean, 1e-3f));
-        float thr = mean + K_SIGMA * sigma;
-        int hot = 0;
-        for (int i = 0; i < W * H; ++i) {
-            uint16_t c;
-            if (y_on[i] > thr) { c = 0xF800; hot++; }        /* red = above threshold */
-            else { int g = y_on[i] * 4; if (g > 255) g = 255;  /* amplified grey */
-                   c = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3)); }
-            diff_img[2 * i] = c >> 8; diff_img[2 * i + 1] = c & 0xFF;
-        }
-        lcd_draw_be(diff_img);
-        printf("D,%lu,%c,%d,%.2f,%.2f,%.1f,%d,%d,%d,%d,%.1f\n", (unsigned long)now_ms(),
-               use_off_axis ? 'O' : 'A', AEC[aec_i], mean, sigma, thr, hot, peak, px, py,
-               (peak - mean) / sigma);
+        sweep++;
     }
 }
