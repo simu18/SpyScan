@@ -390,9 +390,8 @@ void app_main(void)
     }
 
     /* ---- Phase 2: Multi-Modal Detection Engine ---- */
-    cam_auto(false, AEC_PRESETS[aec_idx], 0);
-    printf("I,%lu,mode,DIFF_REALTIME,aec=%d,led=%c\n", (unsigned long)now_ms(),
-           AEC_PRESETS[aec_idx], use_off_axis ? 'O' : 'A');
+    cam_auto(false, AEC_PRESETS[aec_idx], 8);
+    printf("I,%lu,mode,DIFF_REALTIME,aec=%d,dual_led=A+O\n", (unsigned long)now_ms(), AEC_PRESETS[aec_idx]);
 
     for (;;) {
         int btn = buttons_poll();
@@ -555,25 +554,31 @@ void app_main(void)
         }
 
         /* ----------------------------------- MODE 2: ACTIVE RETROREFLECTION DIFF */
-        int led = use_off_axis ? PIN_LED_OFF : PIN_LED_AXIS;
+        /* Alternating On-Axis vs Off-Axis Strobing:
+         * Step 1: Pulse ON-AXIS LED (GPIO 2) -> Capture Retroreflective Frame
+         * Step 2: Pulse OFF-AXIS LED (GPIO 14) -> Capture Ambient/Diffuse Frame
+         * Diff = max(0, on_axis - off_axis): isolates optical cat-eye retroreflection! */
 
-        /* Step 1: LED ON frame */
-        gpio_set_level(led, 1);
+        /* Step 1: ON-AXIS frame */
+        gpio_set_level(PIN_LED_OFF, 0);
+        gpio_set_level(PIN_LED_AXIS, 1);
         { camera_fb_t *f = grab_fresh(1); if (f) esp_camera_fb_return(f); }
         camera_fb_t *fb_on = esp_camera_fb_get();
-        if (!fb_on) { gpio_set_level(led, 0); continue; }
+        if (!fb_on) { gpio_set_level(PIN_LED_AXIS, 0); continue; }
         for (int i = 0; i < W * H; ++i) y_on[i] = lum(fb_on->buf + 2 * i);
         esp_camera_fb_return(fb_on);
 
-        /* Step 2: LED OFF frame */
-        gpio_set_level(led, 0);
+        /* Step 2: OFF-AXIS frame */
+        gpio_set_level(PIN_LED_AXIS, 0);
+        gpio_set_level(PIN_LED_OFF, 1);
         { camera_fb_t *f = grab_fresh(1); if (f) esp_camera_fb_return(f); }
         camera_fb_t *fb_off = esp_camera_fb_get();
+        gpio_set_level(PIN_LED_OFF, 0);
         if (!fb_off) continue;
         for (int i = 0; i < W * H; ++i) y_off[i] = lum(fb_off->buf + 2 * i);
         esp_camera_fb_return(fb_off);
 
-        /* Step 3: Compute Difference d = max(0, on - off) */
+        /* Step 3: Compute Difference d = max(0, on_axis - off_axis) */
         double sum = 0, sum2 = 0;
         int peak = 0, px = 0, py = 0;
         for (int i = 0; i < W * H; ++i) {
@@ -587,8 +592,8 @@ void app_main(void)
 
         float mean = (float)(sum / (W * H));
         float sigma = sqrtf(fmaxf((float)(sum2 / (W * H)) - mean * mean, 1e-3f));
-        float thr = mean + 4.5f * sigma;
-        if (thr < 12.0f) thr = 12.0f;
+        float thr = mean + 3.8f * sigma;
+        if (thr < 10.0f) thr = 10.0f;
 
         /* Count hot pixels */
         int hot = 0;
@@ -596,18 +601,22 @@ void app_main(void)
             if (y_on[i] > thr) hot++;
         }
 
-        /* Compact lens return criterion:
-         * 1) Peak contrast >= 20 DN above noise
-         * 2) Hot cluster size <= 25 pixels (rejects wide motion blur & table glints)
-         * 3) Only triggers on AXIS LED (directional optical retroreflection) */
-        bool is_lens = (peak >= 20 && hot >= 1 && hot <= 25 && !use_off_axis);
+        float contrast = (float)peak - mean;
+        float snr = contrast / (sigma > 0.1f ? sigma : 1.0f);
+
+        /* Optical Cat's Eye Lens Return Criterion:
+         * 1) Peak intensity >= 12 DN
+         * 2) Contrast above noise floor >= 8.0 DN
+         * 3) SNR >= 3.0 standard deviations
+         * 4) Optical aperture halo (hot cluster 1..250 pixels) */
+        bool is_lens = (peak >= 12 && contrast >= 8.0f && snr >= 3.0f && hot >= 1 && hot <= 250);
 
         /* Render difference image on display */
         for (int i = 0; i < W * H; ++i) {
             uint16_t cc;
             uint8_t d = y_on[i];
             if (d > thr) {
-                cc = 0xF800; /* Red */
+                cc = is_lens ? 0x07E0 : 0xF800; /* Green if locked, Red if ambient high */
             } else {
                 int g = (int)(d * 5); /* amplified greyscale */
                 if (g > 255) g = 255;
@@ -620,6 +629,8 @@ void app_main(void)
         /* If lens detected, draw green targeting reticle box around it */
         if (is_lens) {
             draw_reticle(diff_img, px, py, 0x07E0); /* Green crosshair/box */
+            printf("I,%lu,LENS_LOCKED,peak=%d,loc=(%d,%d),snr=%.1f,hot=%d\n",
+                   (unsigned long)now_ms(), peak, px, py, snr, hot);
         }
 
         lcd_draw_be(diff_img);

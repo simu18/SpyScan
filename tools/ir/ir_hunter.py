@@ -558,17 +558,28 @@ def run_live(port: str, baud: int, session_dir: pathlib.Path, use_gui: bool = Fa
         print("No telemetry frames captured during session.")
 
 
+def find_cam_port(preferred: str = "") -> str:
+    import glob
+    if preferred and os.path.exists(preferred):
+        return preferred
+    ports = sorted(glob.glob("/dev/cu.usbmodem*"))
+    if "/dev/cu.usbmodem111201" in ports:
+        return "/dev/cu.usbmodem111201"
+    return ports[-1] if ports else "/dev/cu.usbmodem111201"
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--port", default="/dev/cu.usbmodem1101", help="Serial port of ESP32-S3")
+    parser.add_argument("--port", default="", help="Serial port of ESP32-S3 (auto-detects if omitted)")
     parser.add_argument("--baud", type=int, default=115200, help="Baud rate (default 115200)")
     parser.add_argument("--gui", action="store_true", help="Launch interactive Matplotlib GUI window")
     parser.add_argument("--demo", action="store_true", help="Run simulated demonstration for testing & reporting")
     args = parser.parse_args()
 
+    port = find_cam_port(args.port)
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     session_dir = DATA_DIR / f"{timestamp}_ir_hunter"
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -578,7 +589,7 @@ def main():
     else:
         if not HAS_SERIAL:
             sys.exit("pyserial is not installed: run `pip install pyserial`")
-        run_live(args.port, args.baud, session_dir, use_gui=args.gui)
+        run_live(port, args.baud, session_dir, use_gui=args.gui)
 
 
 if __name__ == "__main__":

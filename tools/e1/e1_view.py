@@ -96,12 +96,24 @@ class Reader(threading.Thread):
         except Exception: pass
 
 
+def find_cam_port(preferred: str = "") -> str:
+    import glob, os
+    if preferred and os.path.exists(preferred):
+        return preferred
+    ports = sorted(glob.glob("/dev/cu.usbmodem*"))
+    if "/dev/cu.usbmodem111201" in ports:
+        return "/dev/cu.usbmodem111201"
+    return ports[-1] if ports else "/dev/cu.usbmodem111201"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port", required=True)
-    ap.add_argument("--baud", type=int, default=921600)   # ignored by USB-CDC, harmless
+    ap.add_argument("--port", default="", help="Serial port of CAM board (auto-detects if omitted)")
+    ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--log", default="")
     a = ap.parse_args()
+
+    port = find_cam_port(a.port)
 
     if a.log:
         logp = pathlib.Path(a.log)
@@ -112,7 +124,7 @@ def main():
     logf = open(logp, "w", encoding="utf-8")
     print(f"logging to {logp}")
 
-    rd = Reader(a.port, a.baud, logf)
+    rd = Reader(port, a.baud, logf)
     rd.start()
 
     plt.ion()

@@ -291,24 +291,36 @@ def run_demo():
     print(f"\nSaved analysis plot to: {img_p}")
 
 
+def find_sniffer_port(preferred: str = "") -> str:
+    import glob
+    if preferred and os.path.exists(preferred):
+        return preferred
+    ports = sorted(glob.glob("/dev/cu.usbmodem*"))
+    if "/dev/cu.usbmodem111401" in ports:
+        return "/dev/cu.usbmodem111401"
+    return ports[0] if ports else "/dev/cu.usbmodem111401"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--port", default="/dev/cu.usbmodem1101", help="Serial port of ESP32-S3 sniffer")
+    parser.add_argument("--port", default="", help="Serial port of ESP32-S3 sniffer (auto-detects if omitted)")
     parser.add_argument("--target", default="cc:b8:5e:ad:5c:4a", help="Target camera MAC address")
     parser.add_argument("--channel", type=int, default=10, help="Channel of target camera")
     parser.add_argument("--trials", type=int, default=6, help="Number of optical flash trials")
     parser.add_argument("--demo", action="store_true", help="Run simulated test run")
     args = parser.parse_args()
 
+    port = find_sniffer_port(args.port)
+
     if args.demo:
         run_demo()
         return
 
-    print(f"{CYAN}Connecting to ESP32-S3 sniffer on {args.port}...{RESET}")
+    print(f"{CYAN}Connecting to ESP32-S3 sniffer on {port}...{RESET}")
     try:
-        rx = SnifferReceiver(args.port)
+        rx = SnifferReceiver(port)
     except Exception as e:
-        sys.exit(f"{RED}[!] Failed to open serial port {args.port}: {e}{RESET}\nTip: Run with --demo to test without hardware.")
+        sys.exit(f"{RED}[!] Failed to open serial port {port}: {e}{RESET}\nTip: Run with --demo to test without hardware.")
 
     analyzer = FlashStimulusAnalyzer(target_mac=args.target, channel=args.channel, trials=args.trials)
     rx.callbacks.append(analyzer.add_packet_bin)
