@@ -299,8 +299,8 @@ def generate_plots_and_report(session_dir: pathlib.Path, history: list, best_fra
     im = ax1.imshow(img, cmap="inferno", vmin=0, vmax=255, interpolation="bicubic")
     ax1.plot(cx, cy, "o", color="#ff00ff", markersize=14, markeredgewidth=2.5, markerfacecolor="none", label="Detected Emitter")
     ax1.axvline(cx, color="#ff00ff", linestyle="--", alpha=0.6, linewidth=1.2)
-    ax1.axhline(cy, color="#ff00ff", linestyle="--", alpha=0.6, linewidth=1.2)
-    ax1.set_title(f"2D IR Spatial Heatmap (Peak={best_frame['peak']} DN)", fontsize=11, fontweight="bold", color="#ff88ff")
+    peak_val = best_frame.get("peak", int(np.max(img)))
+    ax1.set_title(f"2D IR Spatial Heatmap (Peak={peak_val} DN)", fontsize=11, fontweight="bold", color="#ff88ff")
     ax1.set_xlabel("Sensor X (Scaled Grid)")
     ax1.set_ylabel("Sensor Y (Scaled Grid)")
     plt.colorbar(im, ax=ax1, fraction=0.046, pad=0.04, label="Luminance (0-255 DN)")
@@ -504,8 +504,10 @@ def run_live(port: str, baud: int, session_dir: pathlib.Path, use_gui: bool = Fa
                     ir_alert = bridge.latest_ir_alert
                     hw_count = bridge.hw_trigger_count
 
-                if frame and (best_frame is None or frame.get("peak", 0) > best_frame.get("peak", 0)):
-                    best_frame = frame
+                if frame:
+                    frame["peak"] = int(np.max(frame["img"]))
+                    if best_frame is None or frame["peak"] > best_frame.get("peak", 0):
+                        best_frame = frame
 
                 # 3. Render ANSI terminal
                 if stat and frame:
