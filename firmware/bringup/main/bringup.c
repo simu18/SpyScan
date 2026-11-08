@@ -38,6 +38,9 @@
 #include <fcntl.h>
 #include "esp_camera.h"
 #include "board_pins.h"
+#include "osd_draw.h"
+#include "spyscan_proto.h"
+#include "ui_manager.h"
 
 static const char *TAG = "bringup";
 
@@ -227,20 +230,6 @@ static void emit_small(int aec, char led, float thr, int px, int py)
     printf("F,%d,%c,%d,%d,%.1f,%d,%d,%s\n", aec, led, DSW, DSH, thr, px, py, s_b64);
 }
 
-/* Draws a green targeting box around the detected lens */
-static void draw_reticle(uint8_t *img, int cx, int cy, uint16_t color_rgb565)
-{
-    uint8_t hi = color_rgb565 >> 8;
-    uint8_t lo = color_rgb565 & 0xFF;
-    int b = 10;
-    for (int k = -b; k <= b; ++k) {
-        if (cy - b >= 0 && cx + k >= 0 && cx + k < W) { img[2 * ((cy - b) * W + (cx + k))] = hi; img[2 * ((cy - b) * W + (cx + k)) + 1] = lo; }
-        if (cy + b < H  && cx + k >= 0 && cx + k < W) { img[2 * ((cy + b) * W + (cx + k))] = hi; img[2 * ((cy + b) * W + (cx + k)) + 1] = lo; }
-        if (cx - b >= 0 && cy + k >= 0 && cy + k < H) { img[2 * ((cy + k) * W + (cx - b))] = hi; img[2 * ((cy + k) * W + (cx - b)) + 1] = lo; }
-        if (cx + b < W  && cy + k >= 0 && cy + k < H) { img[2 * ((cy + k) * W + (cx + b))] = hi; img[2 * ((cy + k) * W + (cx + b)) + 1] = lo; }
-    }
-}
-
 /* -------------------------------------------------------------- Buttons */
 typedef struct { int pin; int stable, last; uint32_t t; } btn_t;
 static btn_t s_btn[3] = { { PIN_BTN_UP, 1, 1, 0 }, { PIN_BTN_SEL, 1, 1, 0 }, { PIN_BTN_BACK, 1, 1, 0 } };
@@ -354,9 +343,7 @@ void app_main(void)
     configASSERT(diff_img && y_on && y_off);
 
     static const int AEC_PRESETS[] = { 300, 600, 900, 1200 };
-    const int N_AEC = 4;
     int aec_idx = 1;                    /* default AEC = 600 */
-    opmode_t mode = OPMODE_DIFF;        /* default mode */
     bool use_off_axis = false;
     uint32_t t_emit = 0;
 
@@ -389,13 +376,33 @@ void app_main(void)
         }
     }
 
-    /* ---- Phase 2: Multi-Modal Detection Engine ---- */
+    /* ---- Phase 2: Multi-Modal Detection Engine & UI Manager ---- */
+    ui_state_t s_ui;
+    ui_manager_init(&s_ui);
+    s_ui.screen = UI_SCREEN_MENU;
+
     cam_auto(false, AEC_PRESETS[aec_idx], 8);
-    printf("I,%lu,mode,DIFF_REALTIME,aec=%d,dual_led=A+O\n", (unsigned long)now_ms(), AEC_PRESETS[aec_idx]);
+    printf("I,%lu,mode,SPYSCAN_UI_READY,screens=7\n", (unsigned long)now_ms());
 
     for (;;) {
         int btn = buttons_poll();
         int input = getchar();
+
+        int ui_btn = UI_BTN_NONE;
+        if (btn & 1) ui_btn |= UI_BTN_UP;
+        if (btn & 2) ui_btn |= UI_BTN_SEL;
+        if (btn & 4) ui_btn |= UI_BTN_BACK;
+
+        /* Keyboard shortcuts over serial console */
+        if (input == 'u' || input == '[') ui_btn |= UI_BTN_UP;
+        if (input == 's' || input == ' ' || input == '\r' || input == '\n') ui_btn |= UI_BTN_SEL;
+        if (input == 'b' || input == ']' || input == 'q') ui_btn |= UI_BTN_BACK;
+        if (input >= '1' && input <= '7') s_ui.screen = (ui_screen_t)(input - '0');
+        if (input == '0' || input == 'm') s_ui.screen = UI_SCREEN_MENU;
+
+        if (ui_btn != UI_BTN_NONE) {
+            ui_manager_handle_button(&s_ui, ui_btn);
+        }
 
         /* Hardware 5V IR Module Interrupt / Polling */
 #ifdef PIN_IR_RX
@@ -405,82 +412,32 @@ void app_main(void)
             int ir_lvl = gpio_get_level(PIN_IR_RX);
             if (ir_lvl == 0 && s_last_ir_hw == 1 && (now_ms() - s_ir_hw_debounce > 100)) {
                 s_ir_hw_debounce = now_ms();
+                s_ui.ir_hw_triggered = true;
+                s_ui.ir_hw_trigger_time = now_ms();
                 printf("I,%lu,IR_HW_TRIGGER,level=0\n", (unsigned long)now_ms());
             }
             s_last_ir_hw = ir_lvl;
         }
 #endif
 
-        /* Serial keyboard shortcuts or physical buttons */
-        if (input == '1' || input == 'l') {
-            mode = OPMODE_LIVE;
-            cam_auto(true, 0, 0);
-            printf("I,%lu,mode,LIVE\n", (unsigned long)now_ms());
-        } else if (input == '2' || input == 'd') {
-            mode = OPMODE_DIFF;
-            cam_auto(false, AEC_PRESETS[aec_idx], 0);
-            printf("I,%lu,mode,DIFF_REALTIME,aec=%d\n", (unsigned long)now_ms(), AEC_PRESETS[aec_idx]);
-        } else if (input == '3' || input == 'i') {
-            mode = OPMODE_IR_HUNTER;
-            cam_auto(false, 900, 7);
-            printf("I,%lu,mode,IR_HUNTER (Passive Night-Vision Hunter)\n", (unsigned long)now_ms());
-        } else if (input == 'm' || input == ' ' || (btn & 2)) {
-            /* Cycle modes: LIVE -> DIFF -> IR_HUNTER */
-            mode = (mode + 1) % 3;
-            if (mode == OPMODE_LIVE) {
-                cam_auto(true, 0, 0);
-                printf("I,%lu,mode,LIVE\n", (unsigned long)now_ms());
-            } else if (mode == OPMODE_DIFF) {
-                cam_auto(false, AEC_PRESETS[aec_idx], 0);
-                printf("I,%lu,mode,DIFF_REALTIME\n", (unsigned long)now_ms());
-            } else {
-                cam_auto(false, 900, 7);
-                printf("I,%lu,mode,IR_HUNTER\n", (unsigned long)now_ms());
-            }
-        }
-
-        if (input == 'a') { use_off_axis = false; printf("I,%lu,led,AXIS\n", (unsigned long)now_ms()); }
-        if (input == 'o' || (btn & 4)) {
-            use_off_axis = !use_off_axis;
-            printf("I,%lu,led,%s\n", (unsigned long)now_ms(), use_off_axis ? "OFF_AXIS" : "AXIS");
-        }
-        if (input == '+' || (btn & 1)) {
-            aec_idx = (aec_idx + 1) % N_AEC;
-            if (mode == OPMODE_DIFF) cam_auto(false, AEC_PRESETS[aec_idx], 0);
-            printf("I,%lu,aec,%d\n", (unsigned long)now_ms(), AEC_PRESETS[aec_idx]);
-        }
-        if (input == '-') {
-            aec_idx = (aec_idx - 1 + N_AEC) % N_AEC;
-            if (mode == OPMODE_DIFF) cam_auto(false, AEC_PRESETS[aec_idx], 0);
-            printf("I,%lu,aec,%d\n", (unsigned long)now_ms(), AEC_PRESETS[aec_idx]);
-        }
-        if (input == 's') {
-            printf("I,%lu,status,mode=%d,aec=%d,led=%c\n", (unsigned long)now_ms(),
-                   mode, AEC_PRESETS[aec_idx], use_off_axis ? 'O' : 'A');
-        }
-        if (input == 'h' || input == '?') {
-            printf("I,%lu,cmd_help,1=LIVE,2=DIFF,3=IR_HUNTER,m=cycle,+=aec_up,-=aec_down,a=axis,o=off_axis\n", (unsigned long)now_ms());
-        }
-
-        /* ----------------------------------------------- MODE 1: LIVE VIEW */
-        if (mode == OPMODE_LIVE) {
+        /* ----------------------- SCREENS WITHOUT CAMERA: HUD GRAPHICS ----------------------- */
+        if (s_ui.screen != UI_SCREEN_OPTICAL && s_ui.screen != UI_SCREEN_IR_HUNTER) {
             gpio_set_level(PIN_LED_AXIS, 0);
             gpio_set_level(PIN_LED_OFF, 0);
-            camera_fb_t *fb = esp_camera_fb_get();
-            if (fb) {
-                if (fb->len >= W * H * 2) lcd_draw_be(fb->buf);
-                esp_camera_fb_return(fb);
-            }
+
+            ui_manager_render(&s_ui, diff_img);
+            lcd_draw_be(diff_img);
+            vTaskDelay(pdMS_TO_TICKS(40));
             continue;
         }
 
-        /* ----------------------------------- MODE 3: PASSIVE IR NIGHT-VISION HUNTER */
-        if (mode == OPMODE_IR_HUNTER) {
+        /* ----------------------- SCREEN 2: PASSIVE IR NIGHT-VISION HUNTER ------------------- */
+        if (s_ui.screen == UI_SCREEN_IR_HUNTER) {
             gpio_set_level(PIN_LED_AXIS, 0);
             gpio_set_level(PIN_LED_OFF, 0);
 
             camera_fb_t *fb = esp_camera_fb_get();
-            if (!fb) continue;
+            if (!fb) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
 
             double sum = 0, sum2 = 0;
             int peak = 0, px = 0, py = 0;
@@ -505,12 +462,6 @@ void app_main(void)
 
             float contrast = (float)peak - mean;
             float snr = contrast / (sigma > 0.1f ? sigma : 1.0f);
-
-            /* Active IR Night-Vision Emitter criterion:
-             * 1) Peak intensity >= 110 DN
-             * 2) Contrast >= 35.0 DN above ambient background
-             * 3) SNR >= 3.8 standard deviations
-             * 4) Compact optical bloom (hot pixel count 1..80 px) */
             bool is_ir = (peak >= 110 && contrast >= 35.0f && snr >= 3.8f && hot >= 1 && hot <= 80);
 
             for (int i = 0; i < W * H; ++i) {
@@ -525,35 +476,23 @@ void app_main(void)
                 diff_img[2 * i + 1] = cc & 0xFF;
             }
 
-            if (is_ir) {
-                draw_reticle(diff_img, px, py, 0xF81F); /* Purple targeting reticle */
-                printf("I,%lu,IR_ALERT,peak=%d,loc=(%d,%d),snr=%.1f,hot=%d\n", (unsigned long)now_ms(), peak, px, py, snr, hot);
-            }
+            s_ui.optical.lens_locked = is_ir;
+            s_ui.optical.target_x = px;
+            s_ui.optical.target_y = py;
+            s_ui.optical.snr = snr;
+            s_ui.optical.peak_val = peak;
 
+            ui_manager_render(&s_ui, diff_img);
             lcd_draw_be(diff_img);
 
-            if (now_ms() - t_emit > 150) {
-                for (int by = 0; by < DSH; ++by)
-                    for (int bx = 0; bx < DSW; ++bx) {
-                        int mx = 0;
-                        for (int yy = 0; yy < DSBY; ++yy)
-                            for (int xx = 0; xx < DSBX; ++xx) {
-                                int i = (by * DSBY + yy) * W + (bx * DSBX + xx);
-                                int v = y_on[i];
-                                if (v > mx) mx = v;
-                            }
-                        s_small[by * DSW + bx] = (uint8_t)mx;
-                    }
-                emit_small(900, 'I', thr, px, py);
-                t_emit = now_ms();
+            if (is_ir) {
+                printf("I,%lu,IR_ALERT,peak=%d,loc=(%d,%d),snr=%.1f,hot=%d\n",
+                       (unsigned long)now_ms(), peak, px, py, snr, hot);
             }
-
-            printf("D,%lu,I,900,%.2f,%.2f,%.1f,%d,%d,%d,%d,%.1f\n",
-                   (unsigned long)now_ms(), mean, sigma, thr, hot, peak, px, py, snr);
             continue;
         }
 
-        /* ----------------------------------- MODE 2: ACTIVE RETROREFLECTION DIFF */
+        /* ----------------------- SCREEN 1: OPTICAL RETROREFLECTION DIFF --------------------- */
         /* Alternating On-Axis vs Off-Axis Strobing:
          * Step 1: Pulse ON-AXIS LED (GPIO 2) -> Capture Retroreflective Frame
          * Step 2: Pulse OFF-AXIS LED (GPIO 14) -> Capture Ambient/Diffuse Frame
@@ -584,7 +523,7 @@ void app_main(void)
         for (int i = 0; i < W * H; ++i) {
             int d = (int)y_on[i] - (int)y_off[i];
             if (d < 0) d = 0;
-            y_on[i] = (uint8_t)d; /* reuse y_on as diff buffer */
+            y_on[i] = (uint8_t)d;
             sum += d;
             sum2 += (double)d * d;
             if (d > peak) { peak = d; px = i % W; py = i / W; }
@@ -595,7 +534,6 @@ void app_main(void)
         float thr = mean + 3.8f * sigma;
         if (thr < 10.0f) thr = 10.0f;
 
-        /* Count hot pixels */
         int hot = 0;
         for (int i = 0; i < W * H; ++i) {
             if (y_on[i] > thr) hot++;
@@ -603,12 +541,6 @@ void app_main(void)
 
         float contrast = (float)peak - mean;
         float snr = contrast / (sigma > 0.1f ? sigma : 1.0f);
-
-        /* Optical Cat's Eye Lens Return Criterion:
-         * 1) Peak intensity >= 12 DN
-         * 2) Contrast above noise floor >= 8.0 DN
-         * 3) SNR >= 3.0 standard deviations
-         * 4) Optical aperture halo (hot cluster 1..250 pixels) */
         bool is_lens = (peak >= 12 && contrast >= 8.0f && snr >= 3.0f && hot >= 1 && hot <= 250);
 
         /* Render difference image on display */
@@ -626,9 +558,18 @@ void app_main(void)
             diff_img[2 * i + 1] = cc & 0xFF;
         }
 
-        /* If lens detected, draw green targeting reticle box around it */
+        s_ui.optical.lens_locked = is_lens;
+        s_ui.optical.target_x = px;
+        s_ui.optical.target_y = py;
+        s_ui.optical.snr = snr;
+        s_ui.optical.peak_val = peak;
+        s_ui.optical.hot_px = hot;
+        s_ui.optical.fps = 3.5f;
+
+        ui_manager_render(&s_ui, diff_img);
+        lcd_draw_be(diff_img);
+
         if (is_lens) {
-            draw_reticle(diff_img, px, py, 0x07E0); /* Green crosshair/box */
             printf("I,%lu,LENS_LOCKED,peak=%d,loc=(%d,%d),snr=%.1f,hot=%d\n",
                    (unsigned long)now_ms(), peak, px, py, snr, hot);
         }

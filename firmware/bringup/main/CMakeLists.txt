@@ -1,3 +1,3 @@
-idf_component_register(SRCS "bringup.c"
+idf_component_register(SRCS "bringup.c" "osd_draw.c" "ui_manager.c"
                        INCLUDE_DIRS "."
                        PRIV_REQUIRES esp_lcd esp_driver_gpio esp_driver_spi esp_psram esp_timer spi_flash)

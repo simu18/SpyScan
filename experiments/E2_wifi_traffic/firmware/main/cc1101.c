@@ -396,3 +396,4 @@ void cc1101_process_step(subghz_sample_t *out)
     out->threat = threat;
     out->threat_name = name;
 }
+

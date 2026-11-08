@@ -103,3 +103,4 @@ I,1200,cc1101,NOT_DETECTED,pins=CSN:10,MOSI:11,SCK:12,MISO:13
 ./.venv/bin/python tools/rf/subghz_bug_hunter.py --beep
 ```
 Press any 433 MHz car remote or transmitter to observe the real-time RF carrier waterfall and audio proximity beeps!
+
