@@ -384,3 +384,4 @@ void ui_manager_render(ui_state_t *ui, uint8_t *fb)
             break;
     }
 }
+

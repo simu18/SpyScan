@@ -55,3 +55,4 @@ void osd_draw_badge(uint8_t *fb, int x, int y, const char *text, uint16_t fg, ui
 #ifdef __cplusplus
 }
 #endif
+

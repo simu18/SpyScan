@@ -323,3 +323,4 @@ void osd_draw_badge(uint8_t *fb, int x, int y, const char *text, uint16_t fg, ui
     osd_draw_rect(fb, x, y, len, 12, fg);
     osd_draw_string(fb, x + 3, y + 3, text, fg, OSD_TRANSPARENT, 1);
 }
+
