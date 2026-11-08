@@ -40,6 +40,7 @@
 #include "nvs_flash.h"
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
+#include "cc1101.h"
 
 #define MAX_DEV        64       /* tracked MACs; LRU replacement when full */
 #define MAX_AP         32
@@ -55,6 +56,7 @@ typedef struct {
     uint8_t  ch;
     uint8_t  a1[6], a2[6], a3[6];
     char     ssid[33];     /* only for beacons, else empty              */
+    char     vendor[65];   /* for Probe/Assoc WPS vendor info           */
 } pkt_rec_t;
 
 typedef struct {
@@ -83,6 +85,7 @@ static volatile bool     s_focus_on = false;
 static volatile uint8_t  s_channel  = 1;
 static volatile uint32_t s_drops    = 0;
 static volatile uint32_t s_rx_total = 0;
+static volatile subghz_mode_t s_subghz_mode = SUBGHZ_MODE_MONITOR;
 
 static inline uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
@@ -101,6 +104,61 @@ static void out(const char *fmt, ...)
 #define MACARG(m) (m)[0], (m)[1], (m)[2], (m)[3], (m)[4], (m)[5]
 
 static inline bool is_unicast(const uint8_t *m) { return (m[0] & 0x01) == 0; }
+
+/* ------------------------------------------------------------------ */
+/* Method 2: Parse WPS Vendor-Specific IE (Tag 221 / 0xDD) in Probe/Assoc */
+static void parse_wps_vendor(const uint8_t *h, uint16_t len, uint16_t offset, char *out, size_t out_sz)
+{
+    out[0] = 0;
+    char dev_name[24] = {0};
+    char model[24] = {0};
+    char mfr[24] = {0};
+
+    while (offset + 2 <= len) {
+        uint8_t tag = h[offset];
+        uint8_t tlen = h[offset + 1];
+        if (offset + 2 + tlen > len) break;
+
+        /* Tag 221 (0xDD) = Vendor Specific */
+        if (tag == 0xdd && tlen >= 4) {
+            /* Microsoft WPS OUI: 00:50:F2 with OUI Type 0x04 */
+            if (h[offset + 2] == 0x00 && h[offset + 3] == 0x50 &&
+                h[offset + 4] == 0xf2 && h[offset + 5] == 0x04) {
+                uint16_t p = offset + 6;
+                uint16_t end = offset + 2 + tlen;
+
+                while (p + 4 <= end) {
+                    uint16_t attr_type = (h[p] << 8) | h[p + 1];
+                    uint16_t attr_len  = (h[p + 2] << 8) | h[p + 3];
+                    p += 4;
+                    if (p + attr_len > end) break;
+
+                    if (attr_type == 0x1011 && attr_len < sizeof dev_name) { /* Device Name */
+                        memcpy(dev_name, h + p, attr_len);
+                        dev_name[attr_len] = 0;
+                    } else if (attr_type == 0x1021 && attr_len < sizeof model) { /* Model Name */
+                        memcpy(model, h + p, attr_len);
+                        model[attr_len] = 0;
+                    } else if (attr_type == 0x1023 && attr_len < sizeof mfr) { /* Manufacturer */
+                        memcpy(mfr, h + p, attr_len);
+                        mfr[attr_len] = 0;
+                    }
+                    p += attr_len;
+                }
+            }
+        }
+        offset += 2 + tlen;
+    }
+    if (dev_name[0] || model[0] || mfr[0]) {
+        snprintf(out, out_sz, "dev=%s,mod=%s,mfr=%s",
+                 dev_name[0] ? dev_name : "_",
+                 model[0] ? model : "_",
+                 mfr[0] ? mfr : "_");
+        for (size_t i = 0; out[i]; ++i) {
+            if (!isprint((unsigned char)out[i]) || out[i] == ',' || out[i] == ' ') out[i] = '_';
+        }
+    }
+}
 
 /* ------------------------------------------------------------------ */
 /* Wi-Fi driver callback: runs in the Wi-Fi task. Keep it minimal.    */
@@ -124,6 +182,7 @@ static void IRAM_ATTR promisc_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     memcpy(r.a2, h + 10, 6);
     memcpy(r.a3, h + 16, 6);
     r.ssid[0] = 0;
+    r.vendor[0] = 0;
 
     /* Beacon: type 0 (mgmt), subtype 8 -> fc0 == 0x80. SSID IE at offset 36. */
     if (type == WIFI_PKT_MGMT && h[0] == 0x80 && len > 38 && h[36] == 0) {
@@ -131,6 +190,10 @@ static void IRAM_ATTR promisc_cb(void *buf, wifi_promiscuous_pkt_type_t type)
         if (sl > 32) sl = 32;
         if (38 + sl <= len) { memcpy(r.ssid, h + 38, sl); r.ssid[sl] = 0; }
         for (int i = 0; i < sl; ++i) if (!isprint((unsigned char)r.ssid[i]) || r.ssid[i] == ',') r.ssid[i] = '_';
+    } else if (type == WIFI_PKT_MGMT && (h[0] == 0x40 || h[0] == 0x00 || h[0] == 0x20)) {
+        /* Probe Request (0x40), Assoc Request (0x00), Reassoc (0x20) */
+        uint16_t offset = (h[0] == 0x40) ? 24 : 28;
+        parse_wps_vendor(h, len, offset, r.vendor, sizeof r.vendor);
     } else if (type == WIFI_PKT_MGMT) {
         return;   /* other management frames are not needed for E2 */
     }
@@ -167,14 +230,23 @@ static void ap_seen(const pkt_rec_t *r)
 static void handle(const pkt_rec_t *r)
 {
     uint8_t type = (r->fc0 >> 2) & 0x3;
-    if (type == 0) {                         /* beacon */
-        ap_seen(r);
-        sta_t *d = dev_get(r->a2, r->t_ms);
-        d->role = 'A';
-        memcpy(d->bssid, r->a2, 6);
-        d->ch = r->ch;
-        d->rssi_sum += r->rssi; d->rssi_n++;
-        d->last_seen_ms = r->t_ms;
+    if (type == 0) {                         /* management frames */
+        if (r->fc0 == 0x80) {                /* beacon */
+            ap_seen(r);
+            sta_t *d = dev_get(r->a2, r->t_ms);
+            d->role = 'A';
+            memcpy(d->bssid, r->a2, 6);
+            d->ch = r->ch;
+            d->rssi_sum += r->rssi; d->rssi_n++;
+            d->last_seen_ms = r->t_ms;
+        } else if (r->vendor[0]) {           /* Probe/Assoc with WPS vendor info */
+            sta_t *d = dev_get(r->a2, r->t_ms);
+            d->role = 'S';
+            d->ch = r->ch;
+            d->rssi_sum += r->rssi; d->rssi_n++;
+            d->last_seen_ms = r->t_ms;
+            out("V,%lu,%u," MACFMT ",%d,%s\n", (unsigned long)r->t_ms, r->ch, MACARG(r->a2), r->rssi, r->vendor);
+        }
         return;
     }
     if (type != 2) return;                   /* data frames only */
@@ -267,6 +339,47 @@ static void agg_task(void *arg)
 }
 
 /* ------------------------------------------------------------------ */
+/* Sub-1 GHz RF Bug Hunter Task (CC1101)                              */
+static void subghz_task(void *arg)
+{
+    subghz_sample_t sample;
+    uint32_t last_emit = 0;
+    uint8_t sweep_ch = 0;
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(20)); /* 50 Hz sampling rate */
+
+        if (!cc1101_is_connected()) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
+        if (s_subghz_mode == SUBGHZ_MODE_OFF) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+
+        if (s_subghz_mode == SUBGHZ_MODE_SWEEP) {
+            sweep_ch = (sweep_ch + 1) % 10;
+            cc1101_set_channel(sweep_ch);
+        }
+
+        cc1101_process_step(&sample);
+
+        uint32_t t = now_ms();
+        /* Emit Sub-1 GHz telemetry every 100 ms or immediately on threat */
+        if (t - last_emit >= 100 || sample.threat == THREAT_ANALOG_BUG) {
+            last_emit = t;
+            out("S,%lu,%lu,%d,%d,%d,%u,%u,%d,%s\n",
+                (unsigned long)t, (unsigned long)sample.freq_khz,
+                (int)sample.rssi_instant, (int)sample.rssi_mean, (int)sample.rssi_peak,
+                (unsigned)(sample.variance * 10.0f), (unsigned)sample.duty_percent,
+                (int)sample.threat, sample.threat_name);
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
 static void cmd_task(void *arg)
 {
     char line[96];
@@ -305,6 +418,40 @@ static void cmd_task(void *arg)
                 for (int i = 0; i < 6; ++i) s_focus[i] = (uint8_t)m[i];
                 s_focus_on = true;
                 out("I,%lu,focus," MACFMT "\n", (unsigned long)t, MACARG(s_focus));
+            }
+        } else if (strncmp(line, "subghz ", 7) == 0) {
+            char *subcmd = line + 7;
+            if (strcmp(subcmd, "433") == 0) {
+                cc1101_set_channel(0);
+                cc1101_set_frequency(433920000);
+                s_subghz_mode = SUBGHZ_MODE_MONITOR;
+                cc1101_set_mode(SUBGHZ_MODE_MONITOR);
+                out("I,%lu,subghz,freq=433.92MHz\n", (unsigned long)t);
+            } else if (strcmp(subcmd, "868") == 0) {
+                cc1101_set_channel(0);
+                cc1101_set_frequency(868300000);
+                s_subghz_mode = SUBGHZ_MODE_MONITOR;
+                cc1101_set_mode(SUBGHZ_MODE_MONITOR);
+                out("I,%lu,subghz,freq=868.30MHz\n", (unsigned long)t);
+            } else if (strcmp(subcmd, "315") == 0) {
+                cc1101_set_channel(0);
+                cc1101_set_frequency(315000000);
+                s_subghz_mode = SUBGHZ_MODE_MONITOR;
+                cc1101_set_mode(SUBGHZ_MODE_MONITOR);
+                out("I,%lu,subghz,freq=315.00MHz\n", (unsigned long)t);
+            } else if (strcmp(subcmd, "sweep") == 0) {
+                s_subghz_mode = SUBGHZ_MODE_SWEEP;
+                cc1101_set_mode(SUBGHZ_MODE_SWEEP);
+                out("I,%lu,subghz,mode=SWEEP_433MHz\n", (unsigned long)t);
+            } else if (strcmp(subcmd, "off") == 0) {
+                s_subghz_mode = SUBGHZ_MODE_OFF;
+                cc1101_set_mode(SUBGHZ_MODE_OFF);
+                out("I,%lu,subghz,mode=OFF\n", (unsigned long)t);
+            } else if (strcmp(subcmd, "init") == 0) {
+                bool ok = cc1101_init();
+                out("I,%lu,subghz_init,%s,ver=0x%02x\n", (unsigned long)t, ok ? "OK" : "FAIL", cc1101_read_version());
+            } else {
+                out("I,%lu,subghz_unknown,%s\n", (unsigned long)t, subcmd);
             }
         } else if (strncmp(line, "mark ", 5) == 0) {
             out("M,%lu,%s\n", (unsigned long)t, line + 5);
@@ -347,7 +494,7 @@ void app_main(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_NULL));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
 
     wifi_promiscuous_filter_t f = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA };
@@ -358,6 +505,17 @@ void app_main(void)
 
     xTaskCreatePinnedToCore(agg_task, "agg", 4096, NULL, 5, NULL, 1);
     xTaskCreatePinnedToCore(cmd_task, "cmd", 3072, NULL, 4, NULL, 1);
+
+    /* Initialize CC1101 Sub-1 GHz RF Bug Hunter */
+    cc1101_engine_init();
+    bool cc_ok = cc1101_init();
+    if (cc_ok) {
+        out("I,%lu,cc1101,OK,version=0x%02x,freq=433.92MHz\n", (unsigned long)now_ms(), cc1101_read_version());
+    } else {
+        out("I,%lu,cc1101,NOT_DETECTED,pins=CSN:%d,MOSI:%d,SCK:%d,MISO:%d\n",
+            (unsigned long)now_ms(), PIN_CC1101_CSN, PIN_CC1101_MOSI, PIN_CC1101_SCK, PIN_CC1101_MISO);
+    }
+    xTaskCreatePinnedToCore(subghz_task, "subghz", 3072, NULL, 3, NULL, 1);
 
     out("I,%lu,boot,spyscan-e2-sniffer,v0.1,transport=usb-serial-jtag\n", (unsigned long)now_ms());
 }

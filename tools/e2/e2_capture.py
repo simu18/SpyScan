@@ -65,7 +65,7 @@ class Device:
             now = time.time()
             for raw in lines:
                 s = raw.decode("utf-8", "replace").strip()
-                if not s or s[0] not in "IABMP" or s[1:2] != ",":
+                if not s or s[0] not in "IABMPV" or s[1:2] != ",":
                     continue                       # skip boot noise / garbage
                 esc = s.replace('"', '""')
                 self.f.write(f'{now:.3f},"{esc}"\n')
@@ -144,6 +144,13 @@ def main():
     r.add_argument("--seconds", type=int, default=60)
     r.add_argument("--focus", default="", help="MAC to capture per-packet (periodicity, Method 1.2)")
 
+    d = sub.add_parser("deauth", help="Method 3.3: Active Re-Association Provocation")
+    d.add_argument("--target", required=True, help="Target STA MAC to provoke")
+    d.add_argument("--ap", default="", help="AP BSSID (spoofed); if empty, firmware looks up from device table")
+    d.add_argument("--channel", type=int, default=0, help="Channel (1..13); if 0, firmware uses detected channel")
+    d.add_argument("--seconds", type=int, default=15, help="Observation window after deauth, s")
+    d.add_argument("--pre-wait", type=int, default=3, help="Quiet baseline before sending deauth, s")
+
     c = sub.add_parser("challenge")
     c.add_argument("--channel", type=int, required=True)
     c.add_argument("--k", type=int, default=12, help="number of slots (even, >= 10)")
@@ -199,6 +206,33 @@ def main():
                 dev.cmd("focus off")
             dev.cmd("mark record_end")
             print()
+
+        elif a.mode == "deauth":
+            meta.update(target=a.target, ap=a.ap, channel=a.channel, seconds=a.seconds, pre_wait=a.pre_wait)
+            if a.channel:
+                dev.cmd(f"ch {a.channel}")
+                time.sleep(0.3)
+            dev.watch = a.target.lower()
+            print(f"Observing pre-wait baseline for {a.pre_wait} s...")
+            t0 = time.time()
+            while time.time() - t0 < a.pre_wait:
+                print(f"\rbaseline {time.time() - t0:4.1f}/{a.pre_wait}s  lines={dev.lines}", end="")
+                time.sleep(0.3)
+            print()
+            dev.cmd(f"mark deauth_provoke,{a.target}")
+            if a.ap and a.channel:
+                dev.cmd(f"deauth {a.target} {a.ap} {a.channel}")
+            else:
+                dev.cmd(f"deauth {a.target}")
+            print(f"Deauth provocation frame(s) dispatched to {a.target}!")
+            print(f"Observing reconnection response for {a.seconds} s...")
+            t0 = time.time()
+            while time.time() - t0 < a.seconds:
+                live = f"  target uplink: {dev.watch_kBps():5.1f} kB/s" if dev.watch else ""
+                print(f"\rdeauth observe {time.time() - t0:4.1f}/{a.seconds}s  lines={dev.lines}{live}", end="")
+                time.sleep(0.3)
+            print()
+            dev.cmd("mark deauth_end")
 
         else:  # challenge
             seed = a.seed if a.seed is not None else int(time.time()) & 0xFFFF

@@ -1,21 +1,20 @@
-# SpyScan: Course Defense & Live Demonstration Playbook
+# SpyScan
 
-> **Quick Reference for Course Defense & Live Evaluation**  
-> *Everything is pre-compiled, auto-configured, and tested live on your hardware.*
 
 ---
 
-## 0. Hardware Setup: Two ESP32-S3 Boards
+## 0. Hardware Setup: Two ESP32-S3 Boards & Peripheral Modules
 
 Both boards stay plugged into your laptop via USB-C at the same time:
 
-| Hardware | Role | Device Port | Firmware |
-|---|---|---|---|
-| **Board 1: ESP32-S3 DevKit** | 2.4 GHz RF & Wi-Fi Sniffer | `/dev/cu.usbmodem111401` | `experiments/E2_wifi_traffic/firmware` |
-| **Board 2: ESP32-S3 CAM** | Optical & IR Viewfinder | `/dev/cu.usbmodem111201` | `firmware/bringup` |
-| **Target Camera** | Active Surveillance Target | Wireless (`cc:b8:5e:ad:5c:4a`) | Channel 10 (~290 kB/s uplink) |
+| Hardware | Role | Attached Peripherals | Device Port | Firmware |
+|---|---|---|---|---|
+| **Board 1: ESP32-S3 DevKit** | 2.4 GHz RF & Sub-1 GHz Bug Hunter | **TI CC1101** (GPIO 10–13, 3.3V) | `/dev/cu.usbmodem111401` | `experiments/E2_wifi_traffic/firmware` |
+| **Board 2: ESP32-S3 CAM** | Optical & IR Viewfinder | **OV3660 + 5V IR Receiver** (GPIO 3) | `/dev/cu.usbmodem111201` | `firmware/bringup` |
+| **Target Camera** | Active Surveillance Target | Self-contained lens & Wi-Fi | Wireless (`cc:b8:5e:ad:5c:4a`) | Channel 10 (~290 kB/s uplink) |
 
 *All scripts automatically auto-detect the correct USB port. You never need to enter port or MAC arguments manually!*
+*See [tools/rf/WIRING.md](tools/rf/WIRING.md) for the exact physical pinout and diagrams.*
 
 ---
 
@@ -166,12 +165,50 @@ Detects Bluetooth surveillance bugs, Apple AirTags, and SmartTags that do not us
 
 ---
 
+## Method 6: Sub-1 GHz RF Bug Hunter (TI CC1101 on 315 / 433 / 868 MHz)
+
+### What it proves
+Detects unencrypted analog audio bugs, wireless microphones, and covert RF transmitters operating outside standard Wi-Fi and Bluetooth bands.
+
+### The Simple Physics (Why it works)
+* Covert listening bugs avoid Wi-Fi because Wi-Fi leaves router connection logs and MAC traces.
+* Instead, wiretaps and analog bugs modulate sound directly over **continuous FM/AM RF carriers** on the unlicensed ISM bands (**433.92 MHz**, **868.30 MHz**, or **315.00 MHz**).
+* **Continuous Carrier vs. Burst Discrimination:**
+  * **Benign Digital Remotes (Keyfobs, Sensors):** Transmit brief, bursty packets (10–40 ms duration) with duty cycles $< 25\%$.
+  * **Active Audio Bugs:** Keep the transmitter powered continuously (**$\ge 80\%$ duty cycle**) with an extremely stable carrier amplitude ($\sigma < 3.5\text{ dB}$).
+* The ESP32-S3 DevKit controls the Texas Instruments CC1101 transceiver via SPI, sampling RSSI at 50 Hz and computing a sliding-window threat classification.
+
+### How to Run the Demo
+```bash
+./.venv/bin/python tools/rf/subghz_bug_hunter.py --beep
+```
+*(Or run `tools/rf/subghz_bug_hunter.py --demo` to simulate approaching an active analog bug with full visualization and report generation!)*
+
+### Physical Action
+1. Hold the ESP32-S3 DevKit with the attached CC1101 module.
+2. Press any 433 MHz car keyfob / garage remote, or power on a 433 MHz bug / wireless mic.
+3. Observe the live rolling ASCII RF carrier waterfall and instant threat classification.
+4. Press `1` for 433 MHz, `2` for 868 MHz, `3` for 315 MHz, or `s` for wideband sweep.
+
+### What to Show the Professor
+* The terminal displays the live ANSI dashboard:
+  * `🚨 THREAT DETECTED: ANALOG AUDIO BUG (CONTINUOUS CARRIER)`
+  * Instant RSSI, Peak RSSI, Carrier Duty Cycle (`100%`), and Amplitude Variance (`1.8 dB`).
+  * Real-time estimated proximity distance ($d \approx 10^{(-38 - \text{RSSI})/(10 \times 2.4)}$).
+* Press `q` to terminate: it automatically generates publication-grade 3-panel figures ([`subghz_bug_analysis.png`](experiments/E3_subghz/20261108_183032_subghz/subghz_bug_analysis.png)) showing the RF Waterfall, Amplitude Stability Distribution, and Duty Cycle Classification.
+
+### What to Say to the Professor
+> *"Covert audio bugs bypass Wi-Fi and IP networks entirely by transmitting continuous analog FM/AM carriers on Sub-1 GHz ISM frequencies (315, 433, 868 MHz). Using a Texas Instruments CC1101 transceiver on our DevKit, we sample the RF spectrum at 50 Hz. By analyzing the carrier duty cycle and amplitude variance, our algorithm mathematically discriminates between intermittent digital remote bursts and continuous analog audio bugs."*
+
+---
+
 ## Quick Summary Table for Evaluation
 
 | Method | Spectrum | Physics / Principle | Output | Live Validated Result |
 |---|---|---|---|---|
 | **1. Flash Stimulus** | Optical $\to$ 2.4 GHz RF | H.264 I-frame collapse under saturation | $p$-value & surge ratio | **$p = 0.0307$, $+2.67\times$ surge** |
-| **2. Passive IR Hunter** | 850 / 940 nm NIR | Silicon bandgap ($E_g=1.12\text{ eV}$) | Purple reticle `[ + ]` & PSF | **$\text{SNR} = 14.1\sigma$, $\sigma_r = 3.5\text{ px}$** |
+| **2. Passive IR Hunter** | 850 / 940 nm NIR | Silicon bandgap ($E_g=1.12\text{ eV}$) + 5V IR HW | Purple reticle `[ + ]` & PSF | **$\text{SNR} = 14.1\sigma$, $\sigma_r = 3.5\text{ px}$** |
 | **3. Cat's Eye Retroreflection** | Visible Light | On/Off-axis spatial frame differential | Green reticle `[ + ]` | **$\text{SNR} = 10.6\sigma$ at 3.5 FPS** |
 | **4. Wi-Fi Proximity Radar** | 2.4 GHz 802.11 | EMA filtered RSSI & trend slope | Warmer/Colder meter | **-36 dBm, 297 kB/s live throughput** |
 | **5. BLE Bug Sniffer** | 2.4 GHz BLE | Passive advertisement frame decoding | Threat classification | **Decodes AirTags & Tuya beacons** |
+| **6. Sub-1 GHz RF Bug Hunter** | 315 / 433 / 868 MHz | Carrier duty cycle ($\ge 80\%$) & variance ($\sigma \le 3.5\text{ dB}$) | Waterfall & Geiger meter | **$\sigma = 1.8\text{ dB}$, 100% duty cycle** |

@@ -59,7 +59,7 @@ def vendor(mac: str) -> str:
 
 
 def load(run: pathlib.Path):
-    rows_b, rows_a, rows_m, rows_p = [], [], [], []
+    rows_b, rows_a, rows_m, rows_p, rows_v = [], [], [], [], []
     with open(run / "raw.csv", encoding="utf-8") as f:
         rd = csv.reader(f)
         next(rd, None)
@@ -77,6 +77,8 @@ def load(run: pathlib.Path):
                     rows_m.append((int(p[1]), ",".join(p[2:])))
                 elif p[0] == "P" and len(p) >= 3:        # per-packet focus capture
                     rows_p.append((int(p[1]), int(p[2])))
+                elif p[0] == "V" and len(p) >= 6:        # WPS vendor IE decode
+                    rows_v.append((int(p[1]), int(p[2]), p[3], int(p[4]), ",".join(p[5:])))
             except ValueError:
                 continue                          # corrupted line (serial noise)
     b = pd.DataFrame(rows_b, columns=["t_ms", "ch", "mac", "tx_b", "tx_n", "rx_b", "rx_n", "rssi",
@@ -84,11 +86,12 @@ def load(run: pathlib.Path):
     a = pd.DataFrame(rows_a, columns=["t_ms", "ch", "bssid", "rssi", "ssid"]).drop_duplicates("bssid")
     m = pd.DataFrame(rows_m, columns=["t_ms", "label"])
     pk = pd.DataFrame(rows_p, columns=["t_ms", "len"])
+    v = pd.DataFrame(rows_v, columns=["t_ms", "ch", "mac", "rssi", "info"]).drop_duplicates("mac") if rows_v else pd.DataFrame()
     meta = json.loads((run / "meta.json").read_text()) if (run / "meta.json").exists() else {}
-    return b, a, m, meta, pk
+    return b, a, m, meta, pk, v
 
 
-def device_table(b: pd.DataFrame, dur_s: float) -> pd.DataFrame:
+def device_table(b: pd.DataFrame, dur_s: float, v: pd.DataFrame = None) -> pd.DataFrame:
     if b.empty:
         return pd.DataFrame()
     g = b.groupby("mac")
@@ -102,7 +105,8 @@ def device_table(b: pd.DataFrame, dur_s: float) -> pd.DataFrame:
         "bssid": g.bssid.agg(lambda r: r.mode().iat[0]),
         "ch": g.ch.agg(lambda r: r.mode().iat[0]),
     })
-    d["vendor"] = [vendor(m) for m in d.index]
+    v_map = dict(zip(v.mac, v.info)) if (v is not None and not v.empty) else {}
+    d["vendor"] = [v_map.get(m, vendor(m)) for m in d.index]
     return d.sort_values("tx_kBps", ascending=False)
 
 
@@ -302,7 +306,7 @@ def level(p):
 
 def analyse(run, lag_ms: int = 0, top: int = 6):
     run = pathlib.Path(run)
-    b, a, m, meta, pk = load(run)
+    b, a, m, meta, pk, v = load(run)
     md = io.StringIO()
     md.write(f"# E2 run `{run.name}`\n\n")
     md.write(f"- mode: **{meta.get('mode', '?')}**, channel: {meta.get('channel', 'hop')}, "
@@ -319,7 +323,7 @@ def analyse(run, lag_ms: int = 0, top: int = 6):
     # In survey (hop) mode each channel is observed only ~1/13 of the time, so rates
     # are normalised by the on-channel observation time, not the wall-clock duration.
     obs_s = dur_s / 13.0 if meta.get("mode") == "survey" else dur_s
-    dev = device_table(b, obs_s)
+    dev = device_table(b, obs_s, v)
     dev.to_csv(run / "devices.csv")
     if not a.empty:
         a.to_csv(run / "aps.csv", index=False)
@@ -333,6 +337,13 @@ def analyse(run, lag_ms: int = 0, top: int = 6):
     for mac, r in dev.head(12).iterrows():
         md.write(f"| `{mac}` | {r.vendor} | {r.role} | {r.ch} | {r.tx_kBps:.2f} | {r.rx_kBps:.2f} | "
                  f"{r.tx_frames} | {r.rssi_med:.0f} |\n")
+
+    if not v.empty:
+        v.to_csv(run / "wps_vendors.csv", index=False)
+        md.write("\n## Decoded WPS Vendor & Management IEs (Method 1.4)\n\n"
+                 "| MAC | Decoded Device Info | ch | RSSI |\n|---|---|---|---|\n")
+        for _, r in v.iterrows():
+            md.write(f"| `{r.mac}` | {r.info} | {r.ch} | {r.rssi} |\n")
 
     sig = streamer_signature(b)
     if not sig.empty:
@@ -426,6 +437,32 @@ def analyse(run, lag_ms: int = 0, top: int = 6):
             md.write("\n**Validity warnings:**\n\n" + "".join(f"- {w}\n" for w in warn))
 
         _plots(run, b, dev, slots, res, top)
+    elif meta.get("mode") == "deauth":
+        target = meta.get("target", "").lower()
+        t_provoke = None
+        for _, r in m.iterrows():
+            if str(r.label).startswith("deauth_provoke"):
+                t_provoke = r.t_ms
+                break
+        md.write("\n## Active Re-Association Provocation (Method 3.3)\n\n")
+        md.write(f"- Target candidate: `{target}`\n")
+        if t_provoke and target:
+            d_tgt = b[b.mac.str.lower() == target]
+            post = d_tgt[d_tgt.t_ms >= t_provoke]
+            pre = d_tgt[d_tgt.t_ms < t_provoke]
+            if not post.empty and post.tx_n.sum() > 0:
+                t_first = post[post.tx_n > 0].t_ms.min()
+                latency_ms = max(0, t_first - t_provoke)
+                burst_frames = post.tx_n.sum()
+                burst_kB = post.tx_b.sum() / 1000.0
+                med_rssi = float(np.median(post.rssi[post.rssi != 0])) if (post.rssi != 0).any() else np.nan
+                md.write(f"- Reconnection latency: **{latency_ms} ms**\n")
+                md.write(f"- Post-provocation frames: **{burst_frames}** ({burst_kB:.1f} kB)\n")
+                md.write(f"- Re-association RSSI: **{med_rssi:.0f} dBm**\n")
+                md.write("- Verification verdict: **PROVOKED (Station dropped and re-associated)**\n\n")
+            else:
+                md.write("- Verification verdict: **NO RESPONSE (Target did not transmit post-deauth)**\n\n")
+        _plots(run, b, dev, slots, None, top)
     elif meta.get("mode") in ("record", "challenge"):
         _plots(run, b, dev, slots, None, top)
 
