@@ -82,3 +82,4 @@ Import the `.stl` files directly into **Bambu Studio** or **OrcaSlicer**:
 3. **Mount LCD:** Seat the ILI9341 display PCB into the internal perimeter shelf. Secure corners with a dab of silicone or 2 mm mounting screws.
 4. **Wire Power & Battery:** Place the Li-Po battery and IP5306 module in their respective back shell retaining bays. Connect the main slide switch to the top slot.
 5. **Close Enclosure:** Carefully route internal wires away from the center, align front and back shells, and tighten the 4× M3 screws.
+

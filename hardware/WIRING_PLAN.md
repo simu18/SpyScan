@@ -172,3 +172,4 @@ Li-Po (+) ─── 100 kΩ ───┬─── CAM Board GPIO 1 (ADC1_CH0)
 5. **Hardware IR:** Connect 5V IR receiver $\to$ point TV remote and verify `IR_HW_TRIGGER` in console.
 6. **CC1101 & DevKit:** Solder SPI wires to DevKit $\to$ confirm `cc1101,INIT_OK,freq=433920kHz`.
 7. **UART Interconnect:** Connect TX $\leftrightarrow$ RX between boards $\to$ verify live Sub-GHz waterfall and Wi-Fi radar on LCD.
+
