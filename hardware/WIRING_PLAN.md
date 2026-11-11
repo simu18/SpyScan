@@ -35,11 +35,13 @@
   Slide Switch (Pin 2) ──► [+5V Rail]
   IP5306 (OUT-) ──────► [Common GND Rail]
 
-[Decoupling & Bulk Capacitors]
-  Between 5V & GND (near boards) : 470 µF (10V+ Electrolytic) + 100 nF (Ceramic)
-  Between 3.3V & GND (on LCD)    : 10 µF Ceramic
+[Bulk Filtering Capacitor]
+  470 µF 16V Electrolytic across +5V Rail & Common GND:
+  • Positive leg (Long leg / No stripe) ──► [+5V Rail]
+  • Negative leg (Short leg / White stripe with '—') ──► [Common GND]
 ```
 
+- **Capacitor Role:** The 470 µF 16V electrolytic capacitor absorbs the instantaneous ~350 mA Wi-Fi radio transmission bursts and LED strobe pulses, preventing brownout resets. Ensure correct polarity!
 - **Charging:** Plug USB-C directly into the **IP5306 charging port** on the enclosure exterior. Charging is independent of the ESP32 boards.
 - **Flashing Safety:** Before connecting a computer USB cable to either ESP32-S3 for flashing, **switch the device OFF** with the slide switch so two 5V sources do not fight each other.
 

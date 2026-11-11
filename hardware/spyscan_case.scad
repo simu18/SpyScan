@@ -98,22 +98,27 @@ module front_shell() {
         translate([14.0, 89.0, -1]) cylinder(h = wall_t + 2, d = led_hole_d);
         translate([14.0, 99.0, -1]) cylinder(h = wall_t + 2, d = led_hole_d);
 
-        // 5. YS-IRTM Module: Dark VS1838B Sensor + 5mm IR Emitter LED (9mm pitch)
-        translate([68.0, 89.5, -1]) cylinder(h = wall_t + 2, d = 6.5); // VS1838B dark receiver
-        translate([68.0, 98.5, -1]) cylinder(h = wall_t + 2, d = 5.3); // 5mm IR LED
-
-        // 6. 3× Navigation Buttons (UP, SEL, BACK)
+        // 5. 3× Navigation Buttons (UP, SEL, BACK)
         translate([20.0, 126.0, -1]) cylinder(h = wall_t + 2, d = btn_hole_d);
         translate([39.0, 126.0, -1]) cylinder(h = wall_t + 2, d = btn_hole_d);
         translate([58.0, 126.0, -1]) cylinder(h = wall_t + 2, d = btn_hole_d);
 
-        // 7. Top Cutouts: SMA Antenna & Power Switch
-        translate([60.0, case_l - 1, (case_h / 4)])
+        // 6. Top Cutouts: SMA Antenna, Power Switch, and Top-Facing YS-IRTM Probe
+        // SMA Antenna (CC1101)
+        translate([62.0, case_l - 1, (case_h / 4)])
             rotate([-90, 0, 0]) cylinder(h = wall_t + 2, d = sma_hole_d);
-        translate([16.0, case_l - 1, (case_h / 4) - 2])
+        
+        // Power Slide Switch
+        translate([14.0, case_l - 1, (case_h / 4) - 2])
             cube([9.0, wall_t + 2, 4.0]);
 
-        // 8. Bottom Cutouts: USB-C Ports
+        // YS-IRTM Top Probe: VS1838B Dark Sensor + 5mm IR LED
+        translate([34.0, case_l - 1, (case_h / 4)])
+            rotate([-90, 0, 0]) cylinder(h = wall_t + 2, d = 6.5); // VS1838B dark receiver
+        translate([43.0, case_l - 1, (case_h / 4)])
+            rotate([-90, 0, 0]) cylinder(h = wall_t + 2, d = 5.3); // 5mm IR LED
+
+        // 7. Bottom Cutouts: USB-C Ports
         translate([20.0, -1, (case_h / 4) - 2])
             cube([9.5, wall_t + 2, 3.5]);
         translate([case_w - 29.5, -1, (case_h / 4) - 2])
