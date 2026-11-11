@@ -79,12 +79,17 @@
    2× [5V Rail ──150Ω Resistor ──► LED Anode ──► LED Cathode ──► Q2 Drain Node]
 ```
 
-### D. 5V Hardware IR Receiver Module
-| IR Module Pin | Connected to | Note |
+### D. YS-IRTM Serial IR Transceiver Module (VS1838B + STC11F02E)
+The YS-IRTM module contains an onboard 8051 MCU, a 22.1184 MHz crystal, a 940 nm IR transmitter LED, and a 38 kHz VS1838B receiver.
+
+| YS-IRTM Pin | Connected to | Function / Level Shifting |
 |---|---|---|
-| **VCC** | **+5V Rail** | 5V module accepts bus power |
+| **5V** | **+5V Rail** | 5V supply |
 | **GND** | **Common GND** | Ground |
-| **OUT / DATA** | CAM Board **GPIO 3** | Active-low; triggers `IR_HW_TRIGGER` |
+| **TXD** | **GPIO 3** (via divider) | Module UART output: `TXD ──1kΩ──┬──► GPIO 3`, `┬──2kΩ──► GND` (shifts 5V to 3.3V) |
+| **RXD** | *Unconnected* | Module UART input (leave open or connect to spare GPIO if transmitting) |
+
+*The UART line idles HIGH (3.3V) and drops LOW on the Start bit when an IR packet is received, immediately triggering `IR_HW_TRIGGER` in firmware.*
 
 ### E. Tactile Buttons (Active-Low)
 | Button | CAM Board Pin | Function |
@@ -142,7 +147,7 @@ Li-Po (+) ─── 100 kΩ ───┬─── CAM Board GPIO 1 (ADC1_CH0)
 | **CAM** | **GND** | Common GND Rail | **Black (Heavy gauge 22 AWG)** |
 | **CAM** | **GPIO 1** | Battery Divider Center (VBAT / 2) | White |
 | **CAM** | **GPIO 2** | AO3400 Q1 Gate (On-Axis Ring) | Blue |
-| **CAM** | **GPIO 3** | 5V IR Module OUT | Yellow |
+| **CAM** | **GPIO 3** | YS-IRTM Module TXD (via 1k/2k divider) | Yellow |
 | **CAM** | **GPIO 14** | AO3400 Q2 Gate (Off-Axis Pair) | Green |
 | **CAM** | **GPIO 21** | LCD SDI / MOSI | Brown |
 | **CAM** | **GPIO 38** | Button UP $\leftrightarrow$ GND | Gray |
