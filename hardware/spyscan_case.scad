@@ -103,14 +103,14 @@ module front_shell() {
         translate([39.0, 126.0, -1]) cylinder(h = wall_t + 2, d = btn_hole_d);
         translate([58.0, 126.0, -1]) cylinder(h = wall_t + 2, d = btn_hole_d);
 
-        // 6. Top Cutouts: SMA Antenna, Power Push Button, and Top-Facing YS-IRTM Probe
+        // 6. Top Cutouts: SMA Antenna, Power Slide Switch, and Top-Facing YS-IRTM Probe
         // SMA Antenna (CC1101)
         translate([62.0, case_l - 1, (case_h / 4)])
             rotate([-90, 0, 0]) cylinder(h = wall_t + 2, d = sma_hole_d);
         
-        // Soft-Power Push Button (Tactile button to K pad)
-        translate([14.0, case_l - 1, (case_h / 4)])
-            rotate([-90, 0, 0]) cylinder(h = wall_t + 2, d = btn_hole_d);
+        // Power Slide Switch (9.0 x 4.0 mm rectangular slot for miniature slide switch)
+        translate([14.0, case_l - 1, (case_h / 4) - 2])
+            cube([9.0, wall_t + 2, 4.0]);
 
         // YS-IRTM Top Probe: VS1838B Dark Sensor + 5mm IR LED
         translate([34.0, case_l - 1, (case_h / 4)])
