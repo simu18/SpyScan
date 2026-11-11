@@ -98,8 +98,9 @@ module front_shell() {
         translate([14.0, 89.0, -1]) cylinder(h = wall_t + 2, d = led_hole_d);
         translate([14.0, 99.0, -1]) cylinder(h = wall_t + 2, d = led_hole_d);
 
-        // 5. 5V Hardware IR Window
-        translate([68.0, 94.0, -1]) cylinder(h = wall_t + 2, d = 6.5);
+        // 5. YS-IRTM Module: Dark VS1838B Sensor + 5mm IR Emitter LED (9mm pitch)
+        translate([68.0, 89.5, -1]) cylinder(h = wall_t + 2, d = 6.5); // VS1838B dark receiver
+        translate([68.0, 98.5, -1]) cylinder(h = wall_t + 2, d = 5.3); // 5mm IR LED
 
         // 6. 3× Navigation Buttons (UP, SEL, BACK)
         translate([20.0, 126.0, -1]) cylinder(h = wall_t + 2, d = btn_hole_d);
