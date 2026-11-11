@@ -103,14 +103,14 @@ module front_shell() {
         translate([39.0, 126.0, -1]) cylinder(h = wall_t + 2, d = btn_hole_d);
         translate([58.0, 126.0, -1]) cylinder(h = wall_t + 2, d = btn_hole_d);
 
-        // 6. Top Cutouts: SMA Antenna, Power Switch, and Top-Facing YS-IRTM Probe
+        // 6. Top Cutouts: SMA Antenna, Power Push Button, and Top-Facing YS-IRTM Probe
         // SMA Antenna (CC1101)
         translate([62.0, case_l - 1, (case_h / 4)])
             rotate([-90, 0, 0]) cylinder(h = wall_t + 2, d = sma_hole_d);
         
-        // Power Slide Switch
-        translate([14.0, case_l - 1, (case_h / 4) - 2])
-            cube([9.0, wall_t + 2, 4.0]);
+        // Soft-Power Push Button (Tactile button to K pad)
+        translate([14.0, case_l - 1, (case_h / 4)])
+            rotate([-90, 0, 0]) cylinder(h = wall_t + 2, d = btn_hole_d);
 
         // YS-IRTM Top Probe: VS1838B Dark Sensor + 5mm IR LED
         translate([34.0, case_l - 1, (case_h / 4)])
@@ -192,7 +192,37 @@ module back_shell() {
     }
 }
 
-// Render Front Shell (or translate for side-by-side export)
+// ------------------------------------------------------------- 3× FRONT BUTTON CARRIER BRACKET
+// Holds the 3× 6x6mm tactile switches rigidly behind the front bezel
+module button_carrier() {
+    carrier_w = 64.0;
+    carrier_l = 14.0;
+    carrier_h = 3.5;
+    btn_spacing = 19.0; // 39 - 20 = 19mm pitch
+    
+    difference() {
+        cube([carrier_w, carrier_l, carrier_h]);
+        
+        // 3 pockets for 6x6mm tactile buttons with wire clearance
+        for (i = [0:2]) {
+            bx = 13.0 + i * btn_spacing;
+            // 6.2 x 6.2 mm pocket for button body
+            translate([bx - 3.1, (carrier_l - 6.2) / 2, 1.2])
+                cube([6.2, 6.2, carrier_h]);
+            // Plunger through-hole
+            translate([bx, carrier_l / 2, -1])
+                cylinder(h = carrier_h + 2, d = 4.0);
+        }
+        
+        // M2 / M2.5 mounting screw holes on sides
+        translate([4.0, carrier_l / 2, -1]) cylinder(h = carrier_h + 2, d = 2.4);
+        translate([carrier_w - 4.0, carrier_l / 2, -1]) cylinder(h = carrier_h + 2, d = 2.4);
+    }
+}
+
+// Render Front Shell, Back Shell, and Button Carrier
 front_shell();
 translate([case_w + 15, 0, 0]) back_shell();
+translate([0, case_l + 15, 0]) button_carrier();
+
 

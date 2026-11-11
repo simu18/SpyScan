@@ -157,6 +157,13 @@ def generate_back_shell():
     return facets
 
 
+def generate_button_carrier():
+    """Generates the 3x 6x6mm tactile button carrier bracket."""
+    w, l, h = 64.0, 14.0, 3.5
+    facets = make_box(0, 0, 0, w, l, h)
+    return facets
+
+
 def main():
     print("Generating SpyScan 3D Enclosure STL files...")
     front_facets = generate_front_shell()
@@ -166,7 +173,11 @@ def main():
     back_facets = generate_back_shell()
     back_stl = OUTPUT_DIR / "spyscan_back_shell.stl"
     write_binary_stl(back_stl, back_facets)
-    print("\n✓ Both STL files generated successfully in hardware/")
+
+    carrier_facets = generate_button_carrier()
+    carrier_stl = OUTPUT_DIR / "spyscan_button_carrier.stl"
+    write_binary_stl(carrier_stl, carrier_facets)
+    print("\n✓ All STL files generated successfully in hardware/")
 
 
 if __name__ == "__main__":
