@@ -331,8 +331,7 @@ void app_main(void)
     measure_fps();
 
     if (!s_cam_ok) {
-        printf("I,%lu,halt,camera missing - check the FPC cable orientation and the pin map\n", (unsigned long)now_ms());
-        for (;;) { buttons_poll(); vTaskDelay(pdMS_TO_TICKS(10)); }
+        printf("W,%lu,camera missing or not seated - booting UI in camera-standby mode\n", (unsigned long)now_ms());
     }
 
     fcntl(fileno(stdin), F_SETFL, O_NONBLOCK);
@@ -347,32 +346,34 @@ void app_main(void)
     bool use_off_axis = false;
     uint32_t t_emit = 0;
 
-    /* ---- Phase 1: LIVE preview for 3 s (camera + LCD sanity) ---- */
-    cam_auto(true, 0, 0);
-    printf("I,%lu,mode,LIVE (3 s preview)\n", (unsigned long)now_ms());
-    uint32_t t_live = now_ms();
-    while (now_ms() - t_live < 3000) {
-        buttons_poll();
-        camera_fb_t *fb = esp_camera_fb_get();
-        if (fb) {
-            if (fb->len >= W * H * 2) {
-                lcd_draw_be(fb->buf);
-                if (now_ms() - t_emit > 300) {          /* stream luma to laptop */
-                    for (int by = 0; by < DSH; ++by)
-                        for (int bx = 0; bx < DSW; ++bx) {
-                            int mx = 0;
-                            for (int yy = 0; yy < DSBY; ++yy)
-                                for (int xx = 0; xx < DSBX; ++xx) {
-                                    int v = lum(fb->buf + 2 * ((by * DSBY + yy) * W + (bx * DSBX + xx)));
-                                    if (v > mx) mx = v;
-                                }
-                            s_small[by * DSW + bx] = (uint8_t)mx;
-                        }
-                    emit_small(0, 'L', 0, 0, 0);
-                    t_emit = now_ms();
+    /* ---- Phase 1: LIVE preview for 3 s (if camera present) ---- */
+    if (s_cam_ok) {
+        cam_auto(true, 0, 0);
+        printf("I,%lu,mode,LIVE (3 s preview)\n", (unsigned long)now_ms());
+        uint32_t t_live = now_ms();
+        while (now_ms() - t_live < 3000) {
+            buttons_poll();
+            camera_fb_t *fb = esp_camera_fb_get();
+            if (fb) {
+                if (fb->len >= W * H * 2) {
+                    lcd_draw_be(fb->buf);
+                    if (now_ms() - t_emit > 300) {          /* stream luma to laptop */
+                        for (int by = 0; by < DSH; ++by)
+                            for (int bx = 0; bx < DSW; ++bx) {
+                                int mx = 0;
+                                for (int yy = 0; yy < DSBY; ++yy)
+                                    for (int xx = 0; xx < DSBX; ++xx) {
+                                        int v = lum(fb->buf + 2 * ((by * DSBY + yy) * W + (bx * DSBX + xx)));
+                                        if (v > mx) mx = v;
+                                    }
+                                s_small[by * DSW + bx] = (uint8_t)mx;
+                            }
+                        emit_small(0, 'L', 0, 0, 0);
+                        t_emit = now_ms();
+                    }
                 }
+                esp_camera_fb_return(fb);
             }
-            esp_camera_fb_return(fb);
         }
     }
 
@@ -436,6 +437,14 @@ void app_main(void)
             gpio_set_level(PIN_LED_AXIS, 0);
             gpio_set_level(PIN_LED_OFF, 0);
 
+            if (!s_cam_ok) {
+                memset(diff_img, 0x10, W * H * 2);
+                ui_manager_render(&s_ui, diff_img);
+                lcd_draw_be(diff_img);
+                vTaskDelay(pdMS_TO_TICKS(50));
+                continue;
+            }
+
             camera_fb_t *fb = esp_camera_fb_get();
             if (!fb) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
 
@@ -497,6 +506,17 @@ void app_main(void)
          * Step 1: Pulse ON-AXIS LED (GPIO 2) -> Capture Retroreflective Frame
          * Step 2: Pulse OFF-AXIS LED (GPIO 14) -> Capture Ambient/Diffuse Frame
          * Diff = max(0, on_axis - off_axis): isolates optical cat-eye retroreflection! */
+
+        if (!s_cam_ok) {
+            gpio_set_level(PIN_LED_AXIS, 0);
+            gpio_set_level(PIN_LED_OFF, 0);
+            memset(diff_img, 0x08, W * H * 2);
+            s_ui.optical.lens_locked = false;
+            ui_manager_render(&s_ui, diff_img);
+            lcd_draw_be(diff_img);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
 
         /* Step 1: ON-AXIS frame */
         gpio_set_level(PIN_LED_OFF, 0);
