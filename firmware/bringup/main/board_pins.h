@@ -26,6 +26,10 @@
 #define PIN_VBAT_SENSE 1
 #define PIN_IR_RX      3      /* optional 5V IR receiver / photodiode input */
 
+/* ---- Inter-Board UART (DevKit RF Coprocessor Link) ---- */
+#define PIN_COPROC_RX  44     /* RX from DevKit GPIO 43 (TX) */
+#define PIN_COPROC_TX  43     /* TX to DevKit GPIO 44 (RX)   */
+
 /* ---- Camera (ESP32-S3-EYE style mapping) ---- */
 #define PIN_CAM_PWDN   (-1)
 #define PIN_CAM_RESET  (-1)

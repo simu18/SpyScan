@@ -40,7 +40,12 @@
 #include "nvs_flash.h"
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
+#include "driver/uart.h"
 #include "cc1101.h"
+
+#define PIN_COPROC_TX 43
+#define PIN_COPROC_RX 44
+#define COPROC_UART   UART_NUM_1
 
 #define MAX_DEV        64       /* tracked MACs; LRU replacement when full */
 #define MAX_AP         32
@@ -97,7 +102,11 @@ static void out(const char *fmt, ...)
     va_start(ap, fmt);
     int n = vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
-    if (n > 0) fwrite(buf, 1, (n < (int)sizeof buf) ? n : (int)sizeof buf - 1, stdout);
+    if (n > 0) {
+        int len = (n < (int)sizeof buf) ? n : (int)sizeof buf - 1;
+        fwrite(buf, 1, len, stdout);
+        uart_write_bytes(COPROC_UART, buf, len);
+    }
 }
 
 #define MACFMT "%02x:%02x:%02x:%02x:%02x:%02x"
@@ -480,6 +489,19 @@ void app_main(void)
     usb_serial_jtag_vfs_use_driver();
     setvbuf(stdin, NULL, _IONBF, 0);
     setvbuf(stdout, NULL, _IONBF, 0);
+
+    /* Inter-board High-Speed UART to CAM Board (GPIO 43 TX, GPIO 44 RX, 115200 baud) */
+    uart_config_t uart_cfg = {
+        .baud_rate = 115200,
+        .data_bits = UART_DATA_8_BITS,
+        .parity    = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+    uart_param_config(COPROC_UART, &uart_cfg);
+    uart_set_pin(COPROC_UART, PIN_COPROC_TX, PIN_COPROC_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    uart_driver_install(COPROC_UART, 1024, 1024, 0, NULL, 0);
 
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {

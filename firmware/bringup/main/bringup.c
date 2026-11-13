@@ -41,6 +41,7 @@
 #include "osd_draw.h"
 #include "spyscan_proto.h"
 #include "ui_manager.h"
+#include "driver/uart.h"
 
 static const char *TAG = "bringup";
 
@@ -49,12 +50,15 @@ static const char *TAG = "bringup";
 #define STRIP_LINES 40
 #define K_SIGMA 6.0f            /* provisional, see E1 */
 
+#define COPROC_UART UART_NUM_1
+
 typedef enum {
     OPMODE_LIVE = 0,         /* Live color preview */
     OPMODE_DIFF = 1,         /* Active optical retroreflection (green reticle [ + ]) */
     OPMODE_IR_HUNTER = 2     /* Passive Infrared Night-Vision Emitter Detector (purple reticle) */
 } opmode_t;
 
+static ui_state_t s_ui;
 static esp_lcd_panel_handle_t s_panel = NULL;
 static SemaphoreHandle_t s_lcd_done;
 static uint16_t *s_strip[2];    /* DMA-capable strips in internal RAM */
@@ -318,6 +322,100 @@ static int buttons_poll(void)
     return ev;
 }
 
+/* ----------------------------------------------- Inter-Board Coprocessor Telemetry */
+static void parse_coproc_line(const char *line)
+{
+    if (!line || !line[0]) return;
+
+    /* 1. Wi-Fi Client/AP Traffic Record:
+     *    B,<t_ms>,<ch>,<mac>,<tx_B>,<tx_n>,<rx_B>,<rx_n>,<rssi>,<role>,<bssid>... */
+    if (line[0] == 'B' && line[1] == ',') {
+        uint32_t t_ms = 0, tx_b = 0, tx_n = 0, rx_b = 0, rx_n = 0;
+        int ch = 0, rssi = 0;
+        char mac_str[24] = {0}, role = '?', bssid_str[24] = {0};
+
+        if (sscanf(line, "B,%lu,%d,%23[^,],%lu,%lu,%lu,%lu,%d,%c,%23s",
+                   &t_ms, &ch, mac_str, &tx_b, &tx_n, &rx_b, &rx_n, &rssi, &role, bssid_str) >= 9) {
+            s_ui.coproc.wifi.ch = (uint8_t)ch;
+            if (rssi != 0) {
+                int last_rssi = s_ui.coproc.wifi.rssi;
+                s_ui.coproc.wifi.rssi = (int8_t)rssi;
+                if (last_rssi != 0) {
+                    s_ui.coproc.wifi.trend_slope = (int8_t)(rssi - last_rssi);
+                }
+            }
+            s_ui.coproc.wifi.tx_kbps = (uint16_t)(tx_b * 8 / 100);
+            s_ui.coproc.wifi.is_streaming = (tx_b > 2000) ? 1 : 0;
+
+            unsigned int m[6];
+            if (sscanf(mac_str, "%x:%x:%x:%x:%x:%x", &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) == 6) {
+                for (int k = 0; k < 6; ++k) s_ui.coproc.wifi.mac[k] = (uint8_t)m[k];
+            }
+            s_ui.coproc.coprocessor_online = true;
+            s_ui.coproc.last_rx_ms = now_ms();
+        }
+    }
+    /* 2. Sub-1 GHz RF Bug Hunter Record:
+     *    S,<t_ms>,<freq_khz>,<rssi_inst>,<rssi_peak>,<floor>,<duty>,<var_x10>,<threat>,<label> */
+    else if (line[0] == 'S' && line[1] == ',') {
+        uint32_t t_ms = 0, freq_khz = 0;
+        int rssi_inst = 0, rssi_peak = 0, floor_rssi = 0, duty = 0, var_x10 = 0, threat = 0;
+        char threat_label[32] = {0};
+
+        if (sscanf(line, "S,%lu,%lu,%d,%d,%d,%d,%d,%d,%31s",
+                   &t_ms, &freq_khz, &rssi_inst, &rssi_peak, &floor_rssi, &duty, &var_x10, &threat, threat_label) >= 8) {
+            s_ui.coproc.subghz.freq_khz = freq_khz;
+            s_ui.coproc.subghz.rssi_inst = (int8_t)rssi_inst;
+            s_ui.coproc.subghz.rssi_peak = (int8_t)rssi_peak;
+            s_ui.coproc.subghz.duty_pct = (uint8_t)duty;
+            s_ui.coproc.subghz.var_x10 = (uint8_t)var_x10;
+            s_ui.coproc.subghz.threat_code = (uint8_t)threat;
+
+            /* Push into rolling history waterfall (8 entries) */
+            for (int k = 0; k < 7; ++k) {
+                s_ui.coproc.subghz_history[k] = s_ui.coproc.subghz_history[k + 1];
+            }
+            s_ui.coproc.subghz_history[7] = (int8_t)rssi_inst;
+
+            s_ui.coproc.coprocessor_online = true;
+            s_ui.coproc.last_rx_ms = now_ms();
+        }
+    }
+    /* 3. Wi-Fi Access Point Beacon:
+     *    A,<t_ms>,<ch>,<bssid>,<rssi>,<ssid> */
+    else if (line[0] == 'A' && line[1] == ',') {
+        s_ui.coproc.coprocessor_online = true;
+        s_ui.coproc.last_rx_ms = now_ms();
+    }
+}
+
+static void coproc_rx_task(void *pv)
+{
+    char line[256];
+    int pos = 0;
+
+    for (;;) {
+        uint8_t b = 0;
+        int n = uart_read_bytes(COPROC_UART, &b, 1, pdMS_TO_TICKS(10));
+        if (n > 0) {
+            if (b == '\n' || b == '\r') {
+                if (pos > 0) {
+                    line[pos] = '\0';
+                    parse_coproc_line(line);
+                    pos = 0;
+                }
+            } else if (pos < (int)sizeof(line) - 1) {
+                line[pos++] = (char)b;
+            }
+        }
+
+        /* 3-second heartbeat timeout */
+        if (now_ms() - s_ui.coproc.last_rx_ms > 3000) {
+            s_ui.coproc.coprocessor_online = false;
+        }
+    }
+}
+
 /* ------------------------------------------------------------ Self-test */
 static void report_system(void)
 {
@@ -453,9 +551,24 @@ void app_main(void)
     }
 
     /* ---- Phase 2: Multi-Modal Detection Engine & UI Manager ---- */
-    ui_state_t s_ui;
     ui_manager_init(&s_ui);
     s_ui.screen = UI_SCREEN_MENU;
+
+    /* Inter-Board UART to DevKit RF Coprocessor (GPIO 44 RX, GPIO 43 TX) */
+    uart_config_t coproc_uart_cfg = {
+        .baud_rate = 115200,
+        .data_bits = UART_DATA_8_BITS,
+        .parity    = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+    uart_param_config(COPROC_UART, &coproc_uart_cfg);
+    uart_set_pin(COPROC_UART, PIN_COPROC_TX, PIN_COPROC_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    uart_driver_install(COPROC_UART, 2048, 0, 0, NULL, 0);
+
+    /* Launch background coprocessor telemetry parser task */
+    xTaskCreate(coproc_rx_task, "coproc_rx", 3072, NULL, 4, NULL);
 
     cam_auto(false, AEC_PRESETS[aec_idx], 8);
     printf("I,%lu,mode,SPYSCAN_UI_READY,screens=7,portrait_240x320\n", (unsigned long)now_ms());
