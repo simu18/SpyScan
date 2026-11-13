@@ -98,7 +98,7 @@ static esp_err_t lcd_init(void)
     esp_lcd_panel_reset(s_panel);
     esp_lcd_panel_init(s_panel);
     esp_lcd_panel_swap_xy(s_panel, false);          /* portrait 240x320 */
-    esp_lcd_panel_mirror(s_panel, true, true);     /* upright portrait (rotated 180) */
+    esp_lcd_panel_mirror(s_panel, true, true);     /* upright portrait (flipped 180) */
     esp_lcd_panel_disp_on_off(s_panel, true);
 
     s_lcd_done = xSemaphoreCreateCounting(2, 2);
@@ -232,47 +232,27 @@ static void emit_small(int aec, char led, float thr, int px, int py)
 }
 
 /* -------------------------------------- Camera QVGA (320x240) to Portrait (240x320) */
-/* Rotate 320x240 camera frame into 240x320 display frame */
+/* Rotate 320x240 camera frame into 240x320 display frame (upright in enclosure) */
 static void rotate_qvga_rgb565_to_portrait(const uint8_t *src_qvga, uint8_t *dst_portrait)
 {
     const uint16_t *s = (const uint16_t *)src_qvga;
     uint16_t *d = (uint16_t *)dst_portrait;
-    if (s_mirror_y) {
-        for (int cy = 0; cy < 240; ++cy) {
-            for (int cx = 0; cx < 320; ++cx) {
-                int dx = 239 - cy;
-                int dy = cx;
-                d[dy * 240 + dx] = s[cy * 320 + cx];
-            }
-        }
-    } else {
-        for (int cy = 0; cy < 240; ++cy) {
-            for (int cx = 0; cx < 320; ++cx) {
-                int dx = cy;
-                int dy = 319 - cx;
-                d[dy * 240 + dx] = s[cy * 320 + cx];
-            }
+    for (int cy = 0; cy < 240; ++cy) {
+        for (int cx = 0; cx < 320; ++cx) {
+            int dx = 239 - cy;
+            int dy = cx;
+            d[dy * 240 + dx] = s[cy * 320 + cx];
         }
     }
 }
 
 static void rotate_qvga_to_portrait_luma(const uint8_t *src_rgb565, uint8_t *dst_luma_portrait)
 {
-    if (s_mirror_y) {
-        for (int cy = 0; cy < 240; ++cy) {
-            for (int cx = 0; cx < 320; ++cx) {
-                int dx = 239 - cy;
-                int dy = cx;
-                dst_luma_portrait[dy * 240 + dx] = lum(src_rgb565 + 2 * (cy * 320 + cx));
-            }
-        }
-    } else {
-        for (int cy = 0; cy < 240; ++cy) {
-            for (int cx = 0; cx < 320; ++cx) {
-                int dx = cy;
-                int dy = 319 - cx;
-                dst_luma_portrait[dy * 240 + dx] = lum(src_rgb565 + 2 * (cy * 320 + cx));
-            }
+    for (int cy = 0; cy < 240; ++cy) {
+        for (int cx = 0; cx < 320; ++cx) {
+            int dx = 239 - cy;
+            int dy = cx;
+            dst_luma_portrait[dy * 240 + dx] = lum(src_rgb565 + 2 * (cy * 320 + cx));
         }
     }
 }
