@@ -15,8 +15,8 @@
 extern "C" {
 #endif
 
-#define OSD_WIDTH   320
-#define OSD_HEIGHT  240
+#define OSD_WIDTH   240
+#define OSD_HEIGHT  320
 
 /* RGB565 Tactical Color Palette */
 #define OSD_COLOR_BLACK      0x0000

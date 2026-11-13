@@ -44,8 +44,8 @@
 
 static const char *TAG = "bringup";
 
-#define W 320
-#define H 240
+#define W 240
+#define H 320
 #define STRIP_LINES 40
 #define K_SIGMA 6.0f            /* provisional, see E1 */
 
@@ -59,6 +59,7 @@ static esp_lcd_panel_handle_t s_panel = NULL;
 static SemaphoreHandle_t s_lcd_done;
 static uint16_t *s_strip[2];    /* DMA-capable strips in internal RAM */
 static bool s_cam_ok = false, s_lcd_ok = false;
+static bool s_mirror_x = false, s_mirror_y = false;
 
 static inline uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
@@ -96,8 +97,8 @@ static esp_err_t lcd_init(void)
     ESP_RETURN_ON_ERROR(esp_lcd_new_panel_ili9341(io, &dev, &s_panel), TAG, "panel");
     esp_lcd_panel_reset(s_panel);
     esp_lcd_panel_init(s_panel);
-    esp_lcd_panel_swap_xy(s_panel, true);          /* landscape 320x240 */
-    esp_lcd_panel_mirror(s_panel, false, false);   /* flip here if the image is mirrored */
+    esp_lcd_panel_swap_xy(s_panel, false);          /* portrait 240x320 */
+    esp_lcd_panel_mirror(s_panel, false, false);   /* upright portrait */
     esp_lcd_panel_disp_on_off(s_panel, true);
 
     s_lcd_done = xSemaphoreCreateCounting(2, 2);
@@ -203,10 +204,10 @@ static inline uint8_t lum(const uint8_t *p)
  * optional. One F line per LIVE frame (throttled) and per DIFF cycle:
  *   F,<aec>,<led L|A|O>,<w>,<h>,<thr>,<peak_x>,<peak_y>,<base64 of w*h bytes>
  * The laptop viewer (tools/e1/e1_view.py) decodes and displays it. */
-#define DSW 80
-#define DSH 60
-#define DSBX (W / DSW)              /* 4 */
-#define DSBY (H / DSH)              /* 4 */
+#define DSW 60
+#define DSH 80
+#define DSBX (W / DSW)              /* 240 / 60 = 4 */
+#define DSBY (H / DSH)              /* 320 / 80 = 4 */
 static uint8_t s_small[DSW * DSH];
 static char    s_b64[DSW * DSH * 4 / 3 + 8];
 
@@ -230,23 +231,90 @@ static void emit_small(int aec, char led, float thr, int px, int py)
     printf("F,%d,%c,%d,%d,%.1f,%d,%d,%s\n", aec, led, DSW, DSH, thr, px, py, s_b64);
 }
 
+/* -------------------------------------- Camera QVGA (320x240) to Portrait (240x320) */
+/* Rotate 320x240 camera frame into 240x320 display frame */
+static void rotate_qvga_rgb565_to_portrait(const uint8_t *src_qvga, uint8_t *dst_portrait)
+{
+    const uint16_t *s = (const uint16_t *)src_qvga;
+    uint16_t *d = (uint16_t *)dst_portrait;
+    for (int cy = 0; cy < 240; ++cy) {
+        for (int cx = 0; cx < 320; ++cx) {
+            int dx = cy;
+            int dy = 319 - cx;
+            d[dy * 240 + dx] = s[cy * 320 + cx];
+        }
+    }
+}
+
+static void rotate_qvga_to_portrait_luma(const uint8_t *src_rgb565, uint8_t *dst_luma_portrait)
+{
+    for (int cy = 0; cy < 240; ++cy) {
+        for (int cx = 0; cx < 320; ++cx) {
+            int dx = cy;
+            int dy = 319 - cx;
+            dst_luma_portrait[dy * 240 + dx] = lum(src_rgb565 + 2 * (cy * 320 + cx));
+        }
+    }
+}
+
 /* -------------------------------------------------------------- Buttons */
-typedef struct { int pin; int stable, last; uint32_t t; } btn_t;
-static btn_t s_btn[3] = { { PIN_BTN_UP, 1, 1, 0 }, { PIN_BTN_SEL, 1, 1, 0 }, { PIN_BTN_BACK, 1, 1, 0 } };
+/* 100 Hz Background Button Polling Task with 20ms Debounce */
+static volatile int s_button_events = 0;
+static portMUX_TYPE s_btn_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void button_task(void *pv)
+{
+    const int pins[3] = { PIN_BTN_UP, PIN_BTN_SEL, PIN_BTN_BACK };
+    int debounce_cnt[3] = { 0, 0, 0 };
+    int btn_state[3] = { 1, 1, 1 };
+    uint32_t last_diag = 0;
+
+    for (;;) {
+        uint32_t now = now_ms();
+        int raw_up = gpio_get_level(PIN_BTN_UP);
+        int raw_sel = gpio_get_level(PIN_BTN_SEL);
+        int raw_back = gpio_get_level(PIN_BTN_BACK);
+        int raw[3] = { raw_up, raw_sel, raw_back };
+
+        for (int i = 0; i < 3; ++i) {
+            if (raw[i] == 0) {
+                /* Button actively pulled LOW (pressed) */
+                if (debounce_cnt[i] < 3) debounce_cnt[i]++;
+                if (debounce_cnt[i] == 2 && btn_state[i] == 1) {
+                    /* Confirmed press (20ms LOW) */
+                    btn_state[i] = 0;
+                    portENTER_CRITICAL(&s_btn_mux);
+                    s_button_events |= (1 << i);
+                    portEXIT_CRITICAL(&s_btn_mux);
+                    printf("I,%lu,btn_click,%s(GPIO%d)\n", (unsigned long)now,
+                           i == 0 ? "UP" : i == 1 ? "SEL" : "BACK", pins[i]);
+                }
+            } else {
+                /* Button released (HIGH) */
+                debounce_cnt[i] = 0;
+                btn_state[i] = 1;
+            }
+        }
+
+        /* Periodic diagnostic heartbeat every 3 seconds to monitor hardware lines */
+        if (now - last_diag >= 3000) {
+            last_diag = now;
+            printf("D,%lu,gpio_raw,UP(38)=%d,SEL(39)=%d,BACK(40)=%d\n",
+                   (unsigned long)now, raw_up, raw_sel, raw_back);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10)); /* 100 Hz polling rate */
+    }
+}
 
 /* returns bitmask of buttons pressed since last call (bit0 UP, bit1 SEL, bit2 BACK) */
 static int buttons_poll(void)
 {
     int ev = 0;
-    uint32_t t = now_ms();
-    for (int i = 0; i < 3; ++i) {
-        int l = gpio_get_level(s_btn[i].pin);
-        if (l != s_btn[i].last) { s_btn[i].last = l; s_btn[i].t = t; }
-        if (t - s_btn[i].t > 20 && l != s_btn[i].stable) {
-            s_btn[i].stable = l;
-            if (!l) { ev |= 1 << i; printf("I,%lu,button,%s\n", (unsigned long)t, i == 0 ? "UP" : i == 1 ? "SEL" : "BACK"); }
-        }
-    }
+    portENTER_CRITICAL(&s_btn_mux);
+    ev = s_button_events;
+    s_button_events = 0;
+    portEXIT_CRITICAL(&s_btn_mux);
     return ev;
 }
 
@@ -302,6 +370,12 @@ void app_main(void)
     gpio_config_t in = { .pin_bit_mask = (1ULL << PIN_BTN_UP) | (1ULL << PIN_BTN_SEL) | (1ULL << PIN_BTN_BACK),
                          .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE };
     gpio_config(&in);
+    gpio_pullup_en(PIN_BTN_UP);
+    gpio_pullup_en(PIN_BTN_SEL);
+    gpio_pullup_en(PIN_BTN_BACK);
+
+    /* Launch 100 Hz background button polling task with 20ms debounce */
+    xTaskCreate(button_task, "btn_task", 2048, NULL, 5, NULL);
 
 #ifdef PIN_IR_RX
     if (PIN_IR_RX >= 0) {
@@ -355,15 +429,16 @@ void app_main(void)
             buttons_poll();
             camera_fb_t *fb = esp_camera_fb_get();
             if (fb) {
-                if (fb->len >= W * H * 2) {
-                    lcd_draw_be(fb->buf);
+                if (fb->len >= 320 * 240 * 2) {
+                    rotate_qvga_rgb565_to_portrait(fb->buf, diff_img);
+                    lcd_draw_be(diff_img);
                     if (now_ms() - t_emit > 300) {          /* stream luma to laptop */
                         for (int by = 0; by < DSH; ++by)
                             for (int bx = 0; bx < DSW; ++bx) {
                                 int mx = 0;
                                 for (int yy = 0; yy < DSBY; ++yy)
                                     for (int xx = 0; xx < DSBX; ++xx) {
-                                        int v = lum(fb->buf + 2 * ((by * DSBY + yy) * W + (bx * DSBX + xx)));
+                                        int v = lum(diff_img + 2 * ((by * DSBY + yy) * W + (bx * DSBX + xx)));
                                         if (v > mx) mx = v;
                                     }
                                 s_small[by * DSW + bx] = (uint8_t)mx;
@@ -383,7 +458,7 @@ void app_main(void)
     s_ui.screen = UI_SCREEN_MENU;
 
     cam_auto(false, AEC_PRESETS[aec_idx], 8);
-    printf("I,%lu,mode,SPYSCAN_UI_READY,screens=7\n", (unsigned long)now_ms());
+    printf("I,%lu,mode,SPYSCAN_UI_READY,screens=7,portrait_240x320\n", (unsigned long)now_ms());
 
     for (;;) {
         int btn = buttons_poll();
@@ -400,6 +475,21 @@ void app_main(void)
         if (input == 'b' || input == ']' || input == 'q') ui_btn |= UI_BTN_BACK;
         if (input >= '1' && input <= '7') s_ui.screen = (ui_screen_t)(input - '0');
         if (input == '0' || input == 'm') s_ui.screen = UI_SCREEN_MENU;
+        if (input == 'r') {
+            s_mirror_x ^= 1; s_mirror_y ^= 1;
+            esp_lcd_panel_mirror(s_panel, s_mirror_x, s_mirror_y);
+            printf("I,%lu,display_flip_180,mirror_x=%d,mirror_y=%d\n", (unsigned long)now_ms(), s_mirror_x, s_mirror_y);
+        }
+        if (input == 'x') {
+            s_mirror_x ^= 1;
+            esp_lcd_panel_mirror(s_panel, s_mirror_x, s_mirror_y);
+            printf("I,%lu,display_flip_x,mirror_x=%d\n", (unsigned long)now_ms(), s_mirror_x);
+        }
+        if (input == 'y') {
+            s_mirror_y ^= 1;
+            esp_lcd_panel_mirror(s_panel, s_mirror_x, s_mirror_y);
+            printf("I,%lu,display_flip_y,mirror_y=%d\n", (unsigned long)now_ms(), s_mirror_y);
+        }
 
         if (ui_btn != UI_BTN_NONE) {
             ui_manager_handle_button(&s_ui, ui_btn);
@@ -448,16 +538,17 @@ void app_main(void)
             camera_fb_t *fb = esp_camera_fb_get();
             if (!fb) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
 
+            rotate_qvga_to_portrait_luma(fb->buf, y_on);
+            esp_camera_fb_return(fb);
+
             double sum = 0, sum2 = 0;
             int peak = 0, px = 0, py = 0;
             for (int i = 0; i < W * H; ++i) {
-                uint8_t v = lum(fb->buf + 2 * i);
-                y_on[i] = v;
+                uint8_t v = y_on[i];
                 sum += v;
                 sum2 += (double)v * v;
                 if (v > peak) { peak = v; px = i % W; py = i / W; }
             }
-            esp_camera_fb_return(fb);
 
             float mean = (float)(sum / (W * H));
             float sigma = sqrtf(fmaxf((float)(sum2 / (W * H)) - mean * mean, 1e-3f));
@@ -524,7 +615,7 @@ void app_main(void)
         { camera_fb_t *f = grab_fresh(1); if (f) esp_camera_fb_return(f); }
         camera_fb_t *fb_on = esp_camera_fb_get();
         if (!fb_on) { gpio_set_level(PIN_LED_AXIS, 0); continue; }
-        for (int i = 0; i < W * H; ++i) y_on[i] = lum(fb_on->buf + 2 * i);
+        rotate_qvga_to_portrait_luma(fb_on->buf, y_on);
         esp_camera_fb_return(fb_on);
 
         /* Step 2: OFF-AXIS frame */
@@ -534,7 +625,7 @@ void app_main(void)
         camera_fb_t *fb_off = esp_camera_fb_get();
         gpio_set_level(PIN_LED_OFF, 0);
         if (!fb_off) continue;
-        for (int i = 0; i < W * H; ++i) y_off[i] = lum(fb_off->buf + 2 * i);
+        rotate_qvga_to_portrait_luma(fb_off->buf, y_off);
         esp_camera_fb_return(fb_off);
 
         /* Step 3: Compute Difference d = max(0, on_axis - off_axis) */
@@ -593,8 +684,6 @@ void app_main(void)
             printf("I,%lu,LENS_LOCKED,peak=%d,loc=(%d,%d),snr=%.1f,hot=%d\n",
                    (unsigned long)now_ms(), peak, px, py, snr, hot);
         }
-
-        lcd_draw_be(diff_img);
 
         /* Stream downsampled frame to laptop e1_view.py */
         if (now_ms() - t_emit > 200) {

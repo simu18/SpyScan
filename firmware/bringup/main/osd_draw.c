@@ -233,29 +233,21 @@ void osd_printf(uint8_t *fb, int x, int y, uint16_t fg, uint16_t bg, int scale, 
 void osd_draw_header(uint8_t *fb, const char *title, float vbat, int bat_pct, const char *status_badge, uint16_t badge_color)
 {
     /* Dark Slate Header Banner */
-    osd_fill_rect(fb, 0, 0, OSD_WIDTH, 20, OSD_COLOR_DARKGRAY);
-    osd_draw_hline(fb, 0, 20, OSD_WIDTH, OSD_COLOR_MIDGRAY);
+    osd_fill_rect(fb, 0, 0, OSD_WIDTH, 18, OSD_COLOR_DARKGRAY);
+    osd_draw_hline(fb, 0, 18, OSD_WIDTH, OSD_COLOR_MIDGRAY);
 
     /* Title */
-    osd_printf(fb, 6, 6, OSD_COLOR_WHITE, OSD_TRANSPARENT, 1, "%s", title ? title : "SPYSCAN");
+    osd_printf(fb, 4, 5, OSD_COLOR_WHITE, OSD_TRANSPARENT, 1, "%s", title ? title : "SPYSCAN");
 
-    /* Status Badge if present */
-    if (status_badge) {
-        int badge_len = (int)strlen(status_badge) * 6 + 8;
-        int bx = 135;
-        osd_fill_rect(fb, bx, 3, badge_len, 14, badge_color);
-        osd_printf(fb, bx + 4, 6, OSD_COLOR_BLACK, OSD_TRANSPARENT, 1, "%s", status_badge);
-    }
-
-    /* Battery Telemetry [■■■□] 3.92V 85% */
+    /* Battery Telemetry at right */
     uint16_t bat_col = (bat_pct < 20) ? OSD_COLOR_RED : (bat_pct < 40) ? OSD_COLOR_ORANGE : OSD_COLOR_GREEN;
-    osd_printf(fb, OSD_WIDTH - 85, 6, bat_col, OSD_TRANSPARENT, 1, "%.2fV %d%%", vbat, bat_pct);
+    osd_printf(fb, OSD_WIDTH - 64, 5, bat_col, OSD_TRANSPARENT, 1, "%d%%", bat_pct);
 
     /* Battery Icon */
-    int ix = OSD_WIDTH - 20, iy = 6;
-    osd_draw_rect(fb, ix, iy, 14, 8, bat_col);
-    osd_draw_vline(fb, ix + 14, iy + 2, 4, bat_col);
-    int fill_w = (bat_pct * 10) / 100;
+    int ix = OSD_WIDTH - 18, iy = 5;
+    osd_draw_rect(fb, ix, iy, 12, 8, bat_col);
+    osd_draw_vline(fb, ix + 12, iy + 2, 4, bat_col);
+    int fill_w = (bat_pct * 8) / 100;
     if (fill_w > 0) osd_fill_rect(fb, ix + 2, iy + 2, fill_w, 4, bat_col);
 }
 
@@ -265,9 +257,9 @@ void osd_draw_footer(uint8_t *fb, const char *up_hint, const char *sel_hint, con
     osd_draw_hline(fb, 0, OSD_HEIGHT - 17, OSD_WIDTH, OSD_COLOR_MIDGRAY);
 
     char footer_txt[80];
-    snprintf(footer_txt, sizeof(footer_txt), "^:%-10s  *:%-10s  <:%-10s",
+    snprintf(footer_txt, sizeof(footer_txt), "^:%-5s  *:%-6s  <:%-5s",
              up_hint ? up_hint : "-", sel_hint ? sel_hint : "-", back_hint ? back_hint : "-");
-    osd_draw_string(fb, 8, OSD_HEIGHT - 12, footer_txt, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1);
+    osd_draw_string(fb, 6, OSD_HEIGHT - 12, footer_txt, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1);
 }
 
 void osd_draw_progress_bar(uint8_t *fb, int x, int y, int w, int h, float val, float min_v, float max_v, uint16_t fg, uint16_t bg)
