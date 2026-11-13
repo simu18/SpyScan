@@ -59,7 +59,7 @@ static esp_lcd_panel_handle_t s_panel = NULL;
 static SemaphoreHandle_t s_lcd_done;
 static uint16_t *s_strip[2];    /* DMA-capable strips in internal RAM */
 static bool s_cam_ok = false, s_lcd_ok = false;
-static bool s_mirror_x = true, s_mirror_y = true;
+static bool s_mirror_x = true, s_mirror_y = false;
 
 static inline uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
@@ -98,7 +98,7 @@ static esp_err_t lcd_init(void)
     esp_lcd_panel_reset(s_panel);
     esp_lcd_panel_init(s_panel);
     esp_lcd_panel_swap_xy(s_panel, false);          /* portrait 240x320 */
-    esp_lcd_panel_mirror(s_panel, true, true);     /* upright portrait (flipped 180) */
+    esp_lcd_panel_mirror(s_panel, true, false);    /* upright portrait: X normal, Y normal */
     esp_lcd_panel_disp_on_off(s_panel, true);
 
     s_lcd_done = xSemaphoreCreateCounting(2, 2);
@@ -239,8 +239,8 @@ static void rotate_qvga_rgb565_to_portrait(const uint8_t *src_qvga, uint8_t *dst
     uint16_t *d = (uint16_t *)dst_portrait;
     for (int cy = 0; cy < 240; ++cy) {
         for (int cx = 0; cx < 320; ++cx) {
-            int dx = 239 - cy;
-            int dy = cx;
+            int dx = cy;
+            int dy = 319 - cx;
             d[dy * 240 + dx] = s[cy * 320 + cx];
         }
     }
@@ -250,8 +250,8 @@ static void rotate_qvga_to_portrait_luma(const uint8_t *src_rgb565, uint8_t *dst
 {
     for (int cy = 0; cy < 240; ++cy) {
         for (int cx = 0; cx < 320; ++cx) {
-            int dx = 239 - cy;
-            int dy = cx;
+            int dx = cy;
+            int dy = 319 - cx;
             dst_luma_portrait[dy * 240 + dx] = lum(src_rgb565 + 2 * (cy * 320 + cx));
         }
     }
