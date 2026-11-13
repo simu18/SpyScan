@@ -42,6 +42,7 @@
 #include "driver/usb_serial_jtag_vfs.h"
 #include "driver/uart.h"
 #include "cc1101.h"
+#include <math.h>
 
 #define PIN_COPROC_TX 43
 #define PIN_COPROC_RX 44
@@ -80,8 +81,6 @@ typedef struct {
 
 static QueueHandle_t s_pkt_q;
 static sta_t   s_dev[MAX_DEV];
-static uint8_t s_ap[MAX_AP][6];
-static int     s_ap_n;
 
 static volatile uint32_t s_bin_ms   = 100;
 static volatile uint32_t s_hop_ms   = 0;     /* 0 = channel locked */
@@ -229,11 +228,37 @@ static sta_t *dev_get(const uint8_t *mac, uint32_t t)
     return d;
 }
 
+typedef struct {
+    uint8_t  mac[6];
+    uint32_t last_out_ms;
+    int8_t   last_rssi;
+} ap_entry_t;
+static ap_entry_t s_ap_entries[MAX_AP];
+static int s_ap_entry_count = 0;
+
 static void ap_seen(const pkt_rec_t *r)
 {
-    for (int i = 0; i < s_ap_n; ++i) if (memcmp(s_ap[i], r->a2, 6) == 0) return;
-    if (s_ap_n < MAX_AP) memcpy(s_ap[s_ap_n++], r->a2, 6);
-    out("A,%lu,%u," MACFMT ",%d,%s\n", (unsigned long)r->t_ms, r->ch, MACARG(r->a2), r->rssi, r->ssid);
+    int idx = -1;
+    for (int i = 0; i < s_ap_entry_count; ++i) {
+        if (memcmp(s_ap_entries[i].mac, r->a2, 6) == 0) { idx = i; break; }
+    }
+    if (idx < 0) {
+        if (s_ap_entry_count < MAX_AP) {
+            idx = s_ap_entry_count++;
+            memcpy(s_ap_entries[idx].mac, r->a2, 6);
+            s_ap_entries[idx].last_out_ms = 0;
+            s_ap_entries[idx].last_rssi = r->rssi;
+        } else {
+            return;
+        }
+    }
+
+    /* Emit on first discovery, on notable RSSI shift, or every 1200 ms */
+    if (r->t_ms - s_ap_entries[idx].last_out_ms >= 1200 || abs(r->rssi - s_ap_entries[idx].last_rssi) >= 3) {
+        s_ap_entries[idx].last_out_ms = r->t_ms;
+        s_ap_entries[idx].last_rssi = r->rssi;
+        out("A,%lu,%u," MACFMT ",%d,%s\n", (unsigned long)r->t_ms, r->ch, MACARG(r->a2), r->rssi, r->ssid);
+    }
 }
 
 static void handle(const pkt_rec_t *r)
@@ -320,6 +345,8 @@ static void agg_task(void *arg)
     uint32_t next_bin = now_ms() + s_bin_ms;
     uint32_t next_hop = now_ms() + (s_hop_ms ? s_hop_ms : 1000);
     uint32_t next_stat = now_ms() + 5000;
+    uint32_t next_heartbeat = now_ms() + 1000;
+    uint32_t next_tracker = now_ms() + 500;
     uint8_t  hop_ch = 1;
 
     for (;;) {
@@ -336,6 +363,39 @@ static void agg_task(void *arg)
             esp_wifi_set_channel(hop_ch, WIFI_SECOND_CHAN_NONE);
             s_channel = hop_ch;
             next_hop = t + s_hop_ms;
+        }
+        if ((int32_t)(t - next_heartbeat) >= 0) {
+            out("H,%lu,COPROC_ALIVE\n", (unsigned long)t);
+            next_heartbeat = t + 1000;
+        }
+        if ((int32_t)(t - next_tracker) >= 0) {
+            /* Scan active tracked devices for strongest transmitter and threat signature */
+            int active_cnt = 0;
+            int best_rssi = -100;
+            int threat_type = 1; /* Default to Apple AirTag / FindMy */
+            for (int i = 0; i < MAX_DEV; ++i) {
+                sta_t *d = &s_dev[i];
+                if (d->used && (t - d->last_seen_ms < 5000)) {
+                    active_cnt++;
+                    int r_avg = d->rssi_n ? (int)(d->rssi_sum / d->rssi_n) : -80;
+                    if (r_avg > best_rssi && r_avg < 0) {
+                        best_rssi = r_avg;
+                        /* Identify vendor signature if known */
+                        if (d->mac[0] == 0xa4 && d->mac[1] == 0xc1) threat_type = 3; /* Tuya */
+                        else if (d->mac[0] == 0x00 && d->mac[1] == 0x1a) threat_type = 2; /* Samsung */
+                        else threat_type = 1; /* Apple */
+                    }
+                }
+            }
+            if (best_rssi > -100) {
+                /* Estimate distance in cm: dist = 10^((-40 - rssi)/20) * 100 */
+                double exp_val = (-40.0 - (double)best_rssi) / 20.0;
+                int dist_cm = (int)(pow(10.0, exp_val) * 100.0);
+                if (dist_cm < 10) dist_cm = 10;
+                if (dist_cm > 999) dist_cm = 999;
+                out("L,%d,%d,%d,%d\n", active_cnt, threat_type, best_rssi, dist_cm);
+            }
+            next_tracker = t + 500;
         }
         if ((int32_t)(t - next_stat) >= 0) {
             out("I,%lu,stat,rx=%lu,drops=%lu,ch=%u,bin=%lu,hop=%lu,heap=%lu\n",
@@ -468,7 +528,7 @@ static void cmd_task(void *arg)
             out("I,%lu,stat,rx=%lu,drops=%lu,ch=%u\n", (unsigned long)t,
                 (unsigned long)s_rx_total, (unsigned long)s_drops, s_channel);
         } else if (strcmp(line, "reset") == 0) {
-            memset(s_dev, 0, sizeof s_dev); s_ap_n = 0;
+            memset(s_dev, 0, sizeof s_dev); s_ap_entry_count = 0;
             out("I,%lu,reset\n", (unsigned long)t);
         } else if (line[0]) {
             out("I,%lu,unknown_cmd,%s\n", (unsigned long)t, line);

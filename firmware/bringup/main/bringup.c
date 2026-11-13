@@ -323,6 +323,11 @@ static int buttons_poll(void)
 }
 
 /* ----------------------------------------------- Inter-Board Coprocessor Telemetry */
+static int s_active_coproc_rx_pin = PIN_COPROC_RX; /* 44 default */
+static uint32_t s_coproc_last_pin_switch = 0;
+static uint32_t s_coproc_packet_count = 0;
+static bool s_coproc_pin_locked = false;
+
 static void parse_coproc_line(const char *line)
 {
     if (!line || !line[0]) return;
@@ -330,17 +335,17 @@ static void parse_coproc_line(const char *line)
     /* 1. Wi-Fi Client/AP Traffic Record:
      *    B,<t_ms>,<ch>,<mac>,<tx_B>,<tx_n>,<rx_B>,<rx_n>,<rssi>,<role>,<bssid>... */
     if (line[0] == 'B' && line[1] == ',') {
-        uint32_t t_ms = 0, tx_b = 0, tx_n = 0, rx_b = 0, rx_n = 0;
+        unsigned long t_ms = 0, tx_b = 0, tx_n = 0, rx_b = 0, rx_n = 0;
         int ch = 0, rssi = 0;
-        char mac_str[24] = {0}, role = '?', bssid_str[24] = {0};
+        char mac_str[24] = {0}, role = '?';
 
-        if (sscanf(line, "B,%lu,%d,%23[^,],%lu,%lu,%lu,%lu,%d,%c,%23s",
-                   &t_ms, &ch, mac_str, &tx_b, &tx_n, &rx_b, &rx_n, &rssi, &role, bssid_str) >= 9) {
+        if (sscanf(line, "B,%lu,%d,%23[^,],%lu,%lu,%lu,%lu,%d,%c",
+                   &t_ms, &ch, mac_str, &tx_b, &tx_n, &rx_b, &rx_n, &rssi, &role) >= 8) {
             s_ui.coproc.wifi.ch = (uint8_t)ch;
             if (rssi != 0) {
                 int last_rssi = s_ui.coproc.wifi.rssi;
                 s_ui.coproc.wifi.rssi = (int8_t)rssi;
-                if (last_rssi != 0) {
+                if (last_rssi != 0 && last_rssi != -95) {
                     s_ui.coproc.wifi.trend_slope = (int8_t)(rssi - last_rssi);
                 }
             }
@@ -353,17 +358,23 @@ static void parse_coproc_line(const char *line)
             }
             s_ui.coproc.coprocessor_online = true;
             s_ui.coproc.last_rx_ms = now_ms();
+            s_coproc_packet_count++;
+            if (!s_coproc_pin_locked) {
+                s_coproc_pin_locked = true;
+                printf("I,%lu,COPROC_LOCKED,rx_pin=%d,type=B\n", (unsigned long)now_ms(), s_active_coproc_rx_pin);
+            }
         }
     }
     /* 2. Sub-1 GHz RF Bug Hunter Record:
      *    S,<t_ms>,<freq_khz>,<rssi_inst>,<rssi_peak>,<floor>,<duty>,<var_x10>,<threat>,<label> */
     else if (line[0] == 'S' && line[1] == ',') {
-        uint32_t t_ms = 0, freq_khz = 0;
-        int rssi_inst = 0, rssi_peak = 0, floor_rssi = 0, duty = 0, var_x10 = 0, threat = 0;
+        unsigned long t_ms = 0, freq_khz = 0;
+        int rssi_inst = 0, rssi_mean = 0, rssi_peak = 0, var_x10 = 0, duty = 0, threat = 0;
         char threat_label[32] = {0};
 
         if (sscanf(line, "S,%lu,%lu,%d,%d,%d,%d,%d,%d,%31s",
-                   &t_ms, &freq_khz, &rssi_inst, &rssi_peak, &floor_rssi, &duty, &var_x10, &threat, threat_label) >= 8) {
+                   &t_ms, &freq_khz, &rssi_inst, &rssi_mean, &rssi_peak,
+                   &var_x10, &duty, &threat, threat_label) >= 8) {
             s_ui.coproc.subghz.freq_khz = freq_khz;
             s_ui.coproc.subghz.rssi_inst = (int8_t)rssi_inst;
             s_ui.coproc.subghz.rssi_peak = (int8_t)rssi_peak;
@@ -379,39 +390,113 @@ static void parse_coproc_line(const char *line)
 
             s_ui.coproc.coprocessor_online = true;
             s_ui.coproc.last_rx_ms = now_ms();
+            s_coproc_packet_count++;
+            if (!s_coproc_pin_locked) {
+                s_coproc_pin_locked = true;
+                printf("I,%lu,COPROC_LOCKED,rx_pin=%d,type=S\n", (unsigned long)now_ms(), s_active_coproc_rx_pin);
+            }
         }
     }
     /* 3. Wi-Fi Access Point Beacon:
      *    A,<t_ms>,<ch>,<bssid>,<rssi>,<ssid> */
     else if (line[0] == 'A' && line[1] == ',') {
+        unsigned long t_ms = 0;
+        int ch = 0, rssi = 0;
+        char mac_str[24] = {0}, ssid[34] = {0};
+        if (sscanf(line, "A,%lu,%d,%23[^,],%d,%33s", &t_ms, &ch, mac_str, &rssi, ssid) >= 4) {
+            s_ui.coproc.wifi.ch = (uint8_t)ch;
+            s_ui.coproc.wifi.rssi = (int8_t)rssi;
+            unsigned int m[6];
+            if (sscanf(mac_str, "%x:%x:%x:%x:%x:%x", &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) == 6) {
+                for (int k = 0; k < 6; ++k) s_ui.coproc.wifi.mac[k] = (uint8_t)m[k];
+            }
+            s_ui.coproc.coprocessor_online = true;
+            s_ui.coproc.last_rx_ms = now_ms();
+            s_coproc_packet_count++;
+            if (!s_coproc_pin_locked) {
+                s_coproc_pin_locked = true;
+                printf("I,%lu,COPROC_LOCKED,rx_pin=%d,type=A\n", (unsigned long)now_ms(), s_active_coproc_rx_pin);
+            }
+        }
+    }
+    /* 4. Covert Bug / BLE Tracker Telemetry:
+     *    L,<count>,<type>,<rssi>,<dist_cm> */
+    else if (line[0] == 'L' && line[1] == ',') {
+        int cnt = 0, type = 0, rssi = 0, dist = 0;
+        if (sscanf(line, "L,%d,%d,%d,%d", &cnt, &type, &rssi, &dist) >= 4) {
+            s_ui.coproc.ble.tag_count = (uint8_t)cnt;
+            s_ui.coproc.ble.nearest_type = (uint8_t)type;
+            s_ui.coproc.ble.nearest_rssi = (int8_t)rssi;
+            s_ui.coproc.ble.distance_cm = (uint16_t)dist;
+            s_ui.coproc.coprocessor_online = true;
+            s_ui.coproc.last_rx_ms = now_ms();
+            s_coproc_packet_count++;
+            if (!s_coproc_pin_locked) {
+                s_coproc_pin_locked = true;
+                printf("I,%lu,COPROC_LOCKED,rx_pin=%d,type=L\n", (unsigned long)now_ms(), s_active_coproc_rx_pin);
+            }
+        }
+    }
+    /* 5. Heartbeat:
+     *    H,<t_ms>,COPROC_ALIVE */
+    else if (line[0] == 'H' && line[1] == ',') {
         s_ui.coproc.coprocessor_online = true;
         s_ui.coproc.last_rx_ms = now_ms();
+        s_coproc_packet_count++;
+        if (!s_coproc_pin_locked) {
+            s_coproc_pin_locked = true;
+            printf("I,%lu,COPROC_LOCKED,rx_pin=%d,type=H\n", (unsigned long)now_ms(), s_active_coproc_rx_pin);
+        }
     }
 }
 
 static void coproc_rx_task(void *pv)
 {
+    uint8_t buf[128];
     char line[256];
     int pos = 0;
+    uint32_t last_status_log = 0;
 
     for (;;) {
-        uint8_t b = 0;
-        int n = uart_read_bytes(COPROC_UART, &b, 1, pdMS_TO_TICKS(10));
+        int n = uart_read_bytes(COPROC_UART, buf, sizeof(buf), pdMS_TO_TICKS(15));
         if (n > 0) {
-            if (b == '\n' || b == '\r') {
-                if (pos > 0) {
-                    line[pos] = '\0';
-                    parse_coproc_line(line);
-                    pos = 0;
+            for (int i = 0; i < n; ++i) {
+                char b = (char)buf[i];
+                if (b == '\n' || b == '\r') {
+                    if (pos > 0) {
+                        line[pos] = '\0';
+                        parse_coproc_line(line);
+                        pos = 0;
+                    }
+                } else if (pos < (int)sizeof(line) - 1) {
+                    line[pos++] = b;
                 }
-            } else if (pos < (int)sizeof(line) - 1) {
-                line[pos++] = (char)b;
             }
         }
 
+        uint32_t now = now_ms();
+
+        /* If no packets received in last 2 seconds and not locked, toggle RX pin between 44 and 43 */
+        if (!s_coproc_pin_locked && (now - s_ui.coproc.last_rx_ms > 2000) && (now - s_coproc_last_pin_switch > 2000)) {
+            s_coproc_last_pin_switch = now;
+            s_active_coproc_rx_pin = (s_active_coproc_rx_pin == 44) ? 43 : 44;
+            int tx_pin = (s_active_coproc_rx_pin == 44) ? 43 : 44;
+            uart_set_pin(COPROC_UART, tx_pin, s_active_coproc_rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+            printf("D,%lu,coproc_hunting,trying_rx_pin=%d\n", (unsigned long)now, s_active_coproc_rx_pin);
+        }
+
         /* 3-second heartbeat timeout */
-        if (now_ms() - s_ui.coproc.last_rx_ms > 3000) {
+        if (now - s_ui.coproc.last_rx_ms > 3000) {
             s_ui.coproc.coprocessor_online = false;
+        }
+
+        /* Periodic diagnostic log every 3 seconds */
+        if (now - last_status_log > 3000) {
+            last_status_log = now;
+            printf("D,%lu,coproc_status,online=%d,packets=%lu,rx_pin=%d,wifi_rssi=%d,subghz_rssi=%d\n",
+                   (unsigned long)now, s_ui.coproc.coprocessor_online,
+                   (unsigned long)s_coproc_packet_count, s_active_coproc_rx_pin,
+                   s_ui.coproc.wifi.rssi, s_ui.coproc.subghz.rssi_inst);
         }
     }
 }

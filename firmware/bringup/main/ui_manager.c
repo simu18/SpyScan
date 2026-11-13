@@ -33,24 +33,21 @@ void ui_manager_init(ui_state_t *ui)
     ui->optical.diff_view = true;
     ui->optical.fps = 3.5f;
 
-    /* Default coprocessor telemetry defaults for standalone preview */
-    ui->coproc.coprocessor_online = true;
-    ui->coproc.wifi.ch = 10;
-    ui->coproc.wifi.mac[0] = 0xCC; ui->coproc.wifi.mac[1] = 0xB8;
-    ui->coproc.wifi.mac[2] = 0x5E; ui->coproc.wifi.mac[3] = 0xAD;
-    ui->coproc.wifi.mac[4] = 0x5C; ui->coproc.wifi.mac[5] = 0x4A;
-    ui->coproc.wifi.rssi = -42;
-    ui->coproc.wifi.tx_kbps = 290;
-    ui->coproc.wifi.trend_slope = 4;
-    ui->coproc.wifi.is_streaming = 1;
+    /* Coprocessor telemetry initialized to searching/standby state */
+    ui->coproc.coprocessor_online = false;
+    ui->coproc.wifi.ch = 1;
+    ui->coproc.wifi.rssi = -95;
+    ui->coproc.wifi.tx_kbps = 0;
+    ui->coproc.wifi.trend_slope = 0;
+    ui->coproc.wifi.is_streaming = 0;
 
     ui->coproc.subghz.freq_khz = 433920;
-    ui->coproc.subghz.rssi_inst = -44;
-    ui->coproc.subghz.rssi_peak = -42;
-    ui->coproc.subghz.duty_pct = 95;
-    ui->coproc.subghz.var_x10 = 18;
-    ui->coproc.subghz.threat_code = 2; /* Analog bug */
-    for (int i = 0; i < 8; ++i) ui->coproc.subghz_history[i] = -75 + i * 4;
+    ui->coproc.subghz.rssi_inst = -95;
+    ui->coproc.subghz.rssi_peak = -95;
+    ui->coproc.subghz.duty_pct = 0;
+    ui->coproc.subghz.var_x10 = 0;
+    ui->coproc.subghz.threat_code = 0; /* Clear */
+    for (int i = 0; i < 8; ++i) ui->coproc.subghz_history[i] = -95;
 
     ui->coproc.challenge.slot_idx = 4;
     ui->coproc.challenge.slot_total = 6;
@@ -185,46 +182,63 @@ static void render_ir_hunter(ui_state_t *ui, uint8_t *fb)
 static void render_wifi_radar(ui_state_t *ui, uint8_t *fb)
 {
     osd_fill_rect(fb, 0, 0, OSD_WIDTH, OSD_HEIGHT, OSD_COLOR_NAVY);
-    osd_draw_header(fb, "3. WI-FI RADAR", ui->vbat, ui->bat_pct, "2.4 GHz", OSD_COLOR_CYAN);
+    osd_draw_header(fb, "3. WI-FI RADAR", ui->vbat, ui->bat_pct,
+                    ui->coproc.coprocessor_online ? "RF ONLINE" : "WAIT LINK",
+                    ui->coproc.coprocessor_online ? OSD_COLOR_GREEN : OSD_COLOR_RED);
 
     /* Target Box */
     osd_fill_rect(fb, 8, 24, OSD_WIDTH - 16, 68, OSD_COLOR_DARKGRAY);
     osd_draw_rect(fb, 8, 24, OSD_WIDTH - 16, 68, OSD_COLOR_MIDGRAY);
 
-    osd_printf(fb, 14, 28, OSD_COLOR_WHITE, OSD_TRANSPARENT, 1,
-               "MAC: %02X:%02X:%02X:%02X:%02X:%02X",
-               ui->coproc.wifi.mac[0], ui->coproc.wifi.mac[1], ui->coproc.wifi.mac[2],
-               ui->coproc.wifi.mac[3], ui->coproc.wifi.mac[4], ui->coproc.wifi.mac[5]);
+    if (!ui->coproc.coprocessor_online) {
+        osd_printf(fb, 14, 28, OSD_COLOR_YELLOW, OSD_TRANSPARENT, 1, "STATUS: LINK SEARCHING...");
+        osd_printf(fb, 14, 42, OSD_COLOR_WHITE, OSD_TRANSPARENT, 1, "CHECK WIRE: DEV 43 -> CAM 44");
+        osd_printf(fb, 14, 56, OSD_COLOR_CYAN, OSD_TRANSPARENT, 1, "+ COMMON GND JUMPER WIRE");
+        osd_printf(fb, 14, 70, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "[ AUTO-SCANNING GPIO 44 & 43 ]");
 
-    osd_printf(fb, 14, 42, OSD_COLOR_WHITE, OSD_TRANSPARENT, 1,
-               "CH: %-2d | ACTIVE STREAMING", ui->coproc.wifi.ch);
+        osd_draw_progress_bar(fb, 8, 100, OSD_WIDTH - 16, 32, -95.0f, -90.0f, -30.0f, OSD_COLOR_MIDGRAY, OSD_COLOR_DARKGRAY);
+        osd_printf(fb, 80, 108, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 2, "-- dBm");
 
-    osd_printf(fb, 14, 56, OSD_COLOR_ORANGE, OSD_TRANSPARENT, 1,
-               "UP THROUGHPUT: %d kB/s", ui->coproc.wifi.tx_kbps);
-
-    osd_printf(fb, 14, 70, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1,
-               "SIGNAL POWER : %d dBm", ui->coproc.wifi.rssi);
-
-    /* Huge Signal Bar */
-    uint16_t bar_color = (ui->coproc.wifi.rssi >= -50) ? OSD_COLOR_RED :
-                         (ui->coproc.wifi.rssi >= -65) ? OSD_COLOR_ORANGE : OSD_COLOR_GREEN;
-    osd_draw_progress_bar(fb, 8, 100, OSD_WIDTH - 16, 32, (float)ui->coproc.wifi.rssi, -90.0f, -30.0f, bar_color, OSD_COLOR_DARKGRAY);
-    osd_printf(fb, 90, 108, OSD_COLOR_WHITE, OSD_TRANSPARENT, 2, "%d dBm", ui->coproc.wifi.rssi);
-
-    /* Direction / Proximity Trend */
-    int slope = ui->coproc.wifi.trend_slope;
-    if (slope > 1) {
-        osd_fill_rect(fb, 8, 142, OSD_WIDTH - 16, 52, OSD_COLOR_RED);
-        osd_printf(fb, 36, 154, OSD_COLOR_WHITE, OSD_TRANSPARENT, 2, "^^ WARMER ^^");
-        osd_printf(fb, 24, 174, OSD_COLOR_WHITE, OSD_TRANSPARENT, 1, "PROXIMITY: < 35 cm (HOTSPOT)");
-    } else if (slope < -1) {
-        osd_fill_rect(fb, 8, 142, OSD_WIDTH - 16, 52, OSD_COLOR_CYAN);
-        osd_printf(fb, 36, 154, OSD_COLOR_BLACK, OSD_TRANSPARENT, 2, "vv COLDER vv");
-        osd_printf(fb, 24, 174, OSD_COLOR_BLACK, OSD_TRANSPARENT, 1, "PROXIMITY: > 2.0 m (FADING)");
-    } else {
         osd_fill_rect(fb, 8, 142, OSD_WIDTH - 16, 52, OSD_COLOR_DARKGRAY);
-        osd_printf(fb, 36, 154, OSD_COLOR_WHITE, OSD_TRANSPARENT, 2, "== STEADY ==");
-        osd_printf(fb, 36, 174, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "DISTANCE: ~80 cm");
+        osd_printf(fb, 36, 154, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 2, "== STANDBY ==");
+        osd_printf(fb, 24, 174, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "WAITING FOR COPROCESSOR");
+    } else {
+        osd_printf(fb, 14, 28, OSD_COLOR_WHITE, OSD_TRANSPARENT, 1,
+                   "MAC: %02X:%02X:%02X:%02X:%02X:%02X",
+                   ui->coproc.wifi.mac[0], ui->coproc.wifi.mac[1], ui->coproc.wifi.mac[2],
+                   ui->coproc.wifi.mac[3], ui->coproc.wifi.mac[4], ui->coproc.wifi.mac[5]);
+
+        osd_printf(fb, 14, 42, OSD_COLOR_WHITE, OSD_TRANSPARENT, 1,
+                   "CH: %-2d | %s", ui->coproc.wifi.ch,
+                   ui->coproc.wifi.is_streaming ? "ACTIVE STREAMING" : "PACKET SNIFFING");
+
+        osd_printf(fb, 14, 56, OSD_COLOR_ORANGE, OSD_TRANSPARENT, 1,
+                   "UP THROUGHPUT: %d kB/s", ui->coproc.wifi.tx_kbps);
+
+        osd_printf(fb, 14, 70, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1,
+                   "SIGNAL POWER : %d dBm", ui->coproc.wifi.rssi);
+
+        /* Huge Signal Bar */
+        uint16_t bar_color = (ui->coproc.wifi.rssi >= -50) ? OSD_COLOR_RED :
+                             (ui->coproc.wifi.rssi >= -65) ? OSD_COLOR_ORANGE : OSD_COLOR_GREEN;
+        osd_draw_progress_bar(fb, 8, 100, OSD_WIDTH - 16, 32, (float)ui->coproc.wifi.rssi, -90.0f, -30.0f, bar_color, OSD_COLOR_DARKGRAY);
+        osd_printf(fb, 90, 108, OSD_COLOR_WHITE, OSD_TRANSPARENT, 2, "%d dBm", ui->coproc.wifi.rssi);
+
+        /* Direction / Proximity Trend */
+        int slope = ui->coproc.wifi.trend_slope;
+        if (slope > 1) {
+            osd_fill_rect(fb, 8, 142, OSD_WIDTH - 16, 52, OSD_COLOR_RED);
+            osd_printf(fb, 36, 154, OSD_COLOR_WHITE, OSD_TRANSPARENT, 2, "^^ WARMER ^^");
+            osd_printf(fb, 24, 174, OSD_COLOR_WHITE, OSD_TRANSPARENT, 1, "PROXIMITY: < 35 cm (HOTSPOT)");
+        } else if (slope < -1) {
+            osd_fill_rect(fb, 8, 142, OSD_WIDTH - 16, 52, OSD_COLOR_CYAN);
+            osd_printf(fb, 36, 154, OSD_COLOR_BLACK, OSD_TRANSPARENT, 2, "vv COLDER vv");
+            osd_printf(fb, 24, 174, OSD_COLOR_BLACK, OSD_TRANSPARENT, 1, "PROXIMITY: > 2.0 m (FADING)");
+        } else {
+            osd_fill_rect(fb, 8, 142, OSD_WIDTH - 16, 52, OSD_COLOR_DARKGRAY);
+            osd_printf(fb, 36, 154, OSD_COLOR_WHITE, OSD_TRANSPARENT, 2, "== STEADY ==");
+            osd_printf(fb, 36, 174, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "DISTANCE: ~80 cm");
+        }
     }
 
     osd_draw_footer(fb, "SCAN", "LOCK", "MENU");
@@ -273,20 +287,31 @@ static void render_flash_stimulus(ui_state_t *ui, uint8_t *fb)
 static void render_subghz(ui_state_t *ui, uint8_t *fb)
 {
     osd_fill_rect(fb, 0, 0, OSD_WIDTH, OSD_HEIGHT, OSD_COLOR_NAVY);
-    osd_draw_header(fb, "5. SUB-1 GHz BUG", ui->vbat, ui->bat_pct, "CC1101", OSD_COLOR_CYAN);
+    osd_draw_header(fb, "5. SUB-1 GHz BUG", ui->vbat, ui->bat_pct,
+                    ui->coproc.coprocessor_online ? "CC1101 LIVE" : "LINK OFFLINE",
+                    ui->coproc.coprocessor_online ? OSD_COLOR_CYAN : OSD_COLOR_RED);
 
     /* Frequency Card */
     osd_fill_rect(fb, 8, 24, OSD_WIDTH - 16, 42, OSD_COLOR_DARKGRAY);
     osd_draw_rect(fb, 8, 24, OSD_WIDTH - 16, 42, OSD_COLOR_MIDGRAY);
-    osd_printf(fb, 14, 28, OSD_COLOR_WHITE, OSD_TRANSPARENT, 1,
-               "FREQ: %.2f MHz (BW 203k)", (float)ui->coproc.subghz.freq_khz / 1000.0f);
-    osd_printf(fb, 14, 44, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1,
-               "INST:%ddBm PEAK:%ddBm DUTY:%d%%",
-               ui->coproc.subghz.rssi_inst, ui->coproc.subghz.rssi_peak,
-               ui->coproc.subghz.duty_pct);
+
+    if (!ui->coproc.coprocessor_online) {
+        osd_printf(fb, 14, 28, OSD_COLOR_YELLOW, OSD_TRANSPARENT, 1, "CC1101: WAITING RF TELEMETRY");
+        osd_printf(fb, 14, 44, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "CHECK WIRE: DEV 43 -> CAM 44");
+    } else {
+        osd_printf(fb, 14, 28, OSD_COLOR_WHITE, OSD_TRANSPARENT, 1,
+                   "FREQ: %.2f MHz (BW 203k)", (float)ui->coproc.subghz.freq_khz / 1000.0f);
+        osd_printf(fb, 14, 44, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1,
+                   "INST:%ddBm PEAK:%ddBm DUTY:%d%%",
+                   ui->coproc.subghz.rssi_inst, ui->coproc.subghz.rssi_peak,
+                   ui->coproc.subghz.duty_pct);
+    }
 
     /* Threat Status Banner */
-    if (ui->coproc.subghz.threat_code == 2) {
+    if (!ui->coproc.coprocessor_online) {
+        osd_fill_rect(fb, 8, 72, OSD_WIDTH - 16, 26, OSD_COLOR_DARKGRAY);
+        osd_printf(fb, 14, 80, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "COPROCESSOR OFFLINE");
+    } else if (ui->coproc.subghz.threat_code == 2) {
         osd_fill_rect(fb, 8, 72, OSD_WIDTH - 16, 26, OSD_COLOR_RED);
         osd_printf(fb, 14, 80, OSD_COLOR_WHITE, OSD_TRANSPARENT, 1, "! ALERT: CONTINUOUS BUG DETECTED !");
     } else if (ui->coproc.subghz.threat_code == 1) {
@@ -313,25 +338,56 @@ static void render_subghz(ui_state_t *ui, uint8_t *fb)
 static void render_ble_sniffer(ui_state_t *ui, uint8_t *fb)
 {
     osd_fill_rect(fb, 0, 0, OSD_WIDTH, OSD_HEIGHT, OSD_COLOR_NAVY);
-    osd_draw_header(fb, "6. BLE TRACKERS", ui->vbat, ui->bat_pct, "BLE 2.4G", OSD_COLOR_CYAN);
+    osd_draw_header(fb, "6. BLE TRACKERS", ui->vbat, ui->bat_pct,
+                    ui->coproc.coprocessor_online ? "LIVE SCAN" : "OFFLINE",
+                    ui->coproc.coprocessor_online ? OSD_COLOR_CYAN : OSD_COLOR_RED);
 
     osd_fill_rect(fb, 8, 24, OSD_WIDTH - 16, 220, OSD_COLOR_DARKGRAY);
     osd_draw_rect(fb, 8, 24, OSD_WIDTH - 16, 220, OSD_COLOR_MIDGRAY);
 
-    osd_printf(fb, 14, 30, OSD_COLOR_WHITE, OSD_TRANSPARENT, 1, "SURVEILLANCE BEACONS:");
+    if (!ui->coproc.coprocessor_online) {
+        osd_printf(fb, 14, 34, OSD_COLOR_YELLOW, OSD_TRANSPARENT, 1, "WAITING FOR COPROCESSOR...");
+        osd_printf(fb, 14, 54, OSD_COLOR_WHITE, OSD_TRANSPARENT, 1, "Connect DevKit GPIO 43 (TX)");
+        osd_printf(fb, 14, 70, OSD_COLOR_CYAN, OSD_TRANSPARENT, 1, "to CAM Board GPIO 44 (RX)");
+        osd_printf(fb, 14, 86, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "and Common GND.");
+        osd_draw_footer(fb, "NEXT", "BEEP", "MENU");
+        return;
+    }
 
-    osd_printf(fb, 14, 48, OSD_COLOR_RED, OSD_TRANSPARENT, 1, "[!] APPLE AIRTAG / FINDMY");
-    osd_printf(fb, 26, 62, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "RSSI: -58 dBm  (~1.2 m)");
+    osd_printf(fb, 14, 30, OSD_COLOR_WHITE, OSD_TRANSPARENT, 1, "SURVEILLANCE BEACONS (%d FOUND):", ui->coproc.ble.tag_count);
 
-    osd_printf(fb, 14, 82, OSD_COLOR_YELLOW, OSD_TRANSPARENT, 1, "[*] SAMSUNG SMARTTAG");
-    osd_printf(fb, 26, 96, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "RSSI: -72 dBm  (~3.4 m)");
+    bool is_apple = (ui->coproc.ble.nearest_type == 1);
+    int apple_rssi = is_apple ? ui->coproc.ble.nearest_rssi : -72;
+    osd_printf(fb, 14, 48, is_apple ? OSD_COLOR_RED : OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1,
+               "%s APPLE AIRTAG / FINDMY", is_apple ? "[!]" : "[*]");
+    osd_printf(fb, 26, 62, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1,
+               "RSSI: %d dBm  (~%.1f m)", apple_rssi, is_apple ? (float)ui->coproc.ble.distance_cm / 100.0f : 2.5f);
 
-    osd_printf(fb, 14, 116, OSD_COLOR_ORANGE, OSD_TRANSPARENT, 1, "[*] TUYA SPY CAM BEACON");
-    osd_printf(fb, 26, 130, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "RSSI: -45 dBm  (~0.4 m)");
+    bool is_samsung = (ui->coproc.ble.nearest_type == 2);
+    int sam_rssi = is_samsung ? ui->coproc.ble.nearest_rssi : -78;
+    osd_printf(fb, 14, 82, is_samsung ? OSD_COLOR_YELLOW : OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1,
+               "%s SAMSUNG SMARTTAG", is_samsung ? "[!]" : "[*]");
+    osd_printf(fb, 26, 96, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1,
+               "RSSI: %d dBm  (~%.1f m)", sam_rssi, is_samsung ? (float)ui->coproc.ble.distance_cm / 100.0f : 4.0f);
+
+    bool is_tuya = (ui->coproc.ble.nearest_type == 3);
+    int tuya_rssi = is_tuya ? ui->coproc.ble.nearest_rssi : ui->coproc.wifi.rssi;
+    osd_printf(fb, 14, 116, is_tuya ? OSD_COLOR_RED : OSD_COLOR_ORANGE, OSD_TRANSPARENT, 1,
+               "%s COVERT WI-FI SPY BEACON", is_tuya ? "[!]" : "[*]");
+    osd_printf(fb, 26, 130, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1,
+               "RSSI: %d dBm  (%s)", tuya_rssi, ui->coproc.wifi.is_streaming ? "STREAMING" : "ACTIVE");
 
     osd_draw_hline(fb, 14, 154, OSD_WIDTH - 28, OSD_COLOR_MIDGRAY);
     osd_printf(fb, 14, 164, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "CLOSEST THREAT DISTANCE:");
-    osd_printf(fb, 14, 180, OSD_COLOR_RED, OSD_TRANSPARENT, 2, "40 cm ALERT!");
+    
+    int closest_dist = ui->coproc.ble.distance_cm ? ui->coproc.ble.distance_cm : 120;
+    if (closest_dist <= 50) {
+        osd_printf(fb, 14, 180, OSD_COLOR_RED, OSD_TRANSPARENT, 2, "%d cm ALERT!", closest_dist);
+    } else if (closest_dist <= 150) {
+        osd_printf(fb, 14, 180, OSD_COLOR_ORANGE, OSD_TRANSPARENT, 2, "%.1f m WARNING", (float)closest_dist / 100.0f);
+    } else {
+        osd_printf(fb, 14, 180, OSD_COLOR_GREEN, OSD_TRANSPARENT, 2, "%.1f m CLEAR", (float)closest_dist / 100.0f);
+    }
 
     osd_draw_footer(fb, "NEXT", "BEEP", "MENU");
 }
@@ -345,14 +401,17 @@ static void render_diagnostics(ui_state_t *ui, uint8_t *fb)
     osd_draw_rect(fb, 8, 24, OSD_WIDTH - 16, 240, OSD_COLOR_MIDGRAY);
 
     osd_printf(fb, 14, 32, OSD_COLOR_WHITE, OSD_TRANSPARENT, 1, "HARDWARE TELEMETRY:");
-    osd_printf(fb, 14, 52, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "FW: SPYSCAN V1.0-RELEASE");
-    osd_printf(fb, 14, 72, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "VBAT: %.2f V (%d%%)", ui->vbat, ui->bat_pct);
-    osd_printf(fb, 14, 92, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "CAM: OV3660 (QVGA RGB)");
-    osd_printf(fb, 14, 112, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "FPS: %.1f FPS", ui->optical.fps);
-    osd_printf(fb, 14, 132, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "COPROC: %s", ui->coproc.coprocessor_online ? "ONLINE (UART 921k)" : "STANDALONE");
-    osd_printf(fb, 14, 152, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "PSRAM: 8192 KB OCTAL");
-    osd_printf(fb, 14, 172, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "IR RX: GPIO 3 (TSOP)");
-    osd_printf(fb, 14, 192, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "LCD: 240x320 PORTRAIT");
+    osd_printf(fb, 14, 50, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "FW: SPYSCAN V1.0-RELEASE");
+    osd_printf(fb, 14, 68, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "VBAT: %.2f V (%d%%)", ui->vbat, ui->bat_pct);
+    osd_printf(fb, 14, 86, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "CAM: OV3660 (QVGA RGB)");
+    osd_printf(fb, 14, 104, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "FPS: %.1f FPS", ui->optical.fps);
+    osd_printf(fb, 14, 122, ui->coproc.coprocessor_online ? OSD_COLOR_GREEN : OSD_COLOR_YELLOW, OSD_TRANSPARENT, 1,
+               "COPROC: %s", ui->coproc.coprocessor_online ? "ONLINE (UART 115k)" : "OFFLINE (HUNTING)");
+    osd_printf(fb, 14, 140, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "WIFI RSSI: %d dBm", ui->coproc.wifi.rssi);
+    osd_printf(fb, 14, 158, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "SUBGHZ RSSI: %d dBm", ui->coproc.subghz.rssi_inst);
+    osd_printf(fb, 14, 176, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "PSRAM: 8192 KB OCTAL");
+    osd_printf(fb, 14, 194, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "IR RX: GPIO 3 (TSOP)");
+    osd_printf(fb, 14, 212, OSD_COLOR_LIGHTGRAY, OSD_TRANSPARENT, 1, "LCD: 240x320 PORTRAIT");
 
     osd_draw_footer(fb, "CAL", "TEST", "MENU");
 }
